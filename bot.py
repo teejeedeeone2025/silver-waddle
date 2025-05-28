@@ -1209,7 +1209,7 @@ if __name__ == "__main__":
 
 print("""
   ⚙️▬▬ι═══════ﺤ -═══════ι▬▬⚙️
-     C R O S S U N D E R COINBASE  
+     C R O S S U N D E R BITGET  
   ⚙️▬▬ι═══════ﺤ -═══════ι▬▬⚙️
 """)
 
@@ -1225,7 +1225,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # Initialize exchanges and trading session
-exchange = ccxt.coinbase({
+exchange = ccxt.bitget({
     'options': {
         'defaultType': 'spot',  # Explicitly set to spot markets
     }
@@ -1741,7 +1741,7 @@ if __name__ == "__main__":
 print("""
   _________________________________
  /                                 \\
-|   C R O S S O V E R  COINBASE   |
+|   C R O S S O V E R  BITGET   |
  \\_________________________________/
         \\                   /
          \\                 /
@@ -1760,7 +1760,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # Initialize exchanges and trading session
-exchange = ccxt.coinbase({
+exchange = ccxt.bitget({
     'options': {
         'defaultType': 'spot',  # Explicitly set to spot markets
     }
@@ -6586,4 +6586,5 @@ if __name__ == "__main__":
 
 
 
-
+##########
+#FINAL
