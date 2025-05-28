@@ -2271,3 +2271,4296 @@ if __name__ == "__main__":
 
 
 
+
+
+#####################################
+################
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+
+
+
+
+print("""
+  ⚙️▬▬ι═══════ﺤ -═══════ι▬▬⚙️
+     C R O S S U N D E R  
+  ⚙️▬▬ι═══════ﺤ -═══════ι▬▬⚙️
+""")
+
+
+
+import ccxt
+import pandas as pd
+import numpy as np
+from pybit.unified_trading import HTTP
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+import pytz
+
+# Initialize exchanges and trading session
+exchange = ccxt.coinbase({
+    'options': {
+        'defaultType': 'spot',  # Explicitly set to spot markets
+    }
+})
+session = HTTP(
+    api_key="4eQbf5STelVE40HOtB",
+    api_secret="bzo7oS1u8jxHIpkpFzy9mDLMvRrARJcXlKxt",
+    demo=True
+)
+
+# Timezone setup
+LAGOS_TZ = pytz.timezone('Africa/Lagos')
+UTC_TZ = pytz.UTC
+
+# Settings
+timeframe = '15m'
+limit = 500
+h = 8.0
+mult = 3.0
+repaint = True
+len_ema = 200
+STOP_LOSS_PERCENT = 2.5  # 2% stop loss
+TAKE_PROFIT_PERCENT = 10.0  # 10% take profit
+
+# Email settings
+SENDER_EMAIL = "dahmadu071@gmail.com"
+RECIPIENT_EMAILS = ["teejeedeeone@gmail.com"]
+EMAIL_PASSWORD = "oase wivf hvqn lyhr"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+def format_pnl(pnl):
+    """Format PnL with proper sign and profit/loss indication"""
+    if pnl > 0:
+        return f"+{pnl:.2f}% (Profit)"
+    elif pnl < 0:
+        return f"{pnl:.2f}% (Loss)"
+    return f"{pnl:.2f}% (Break-even)"
+
+def send_email(subject, body):
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = ", ".join(RECIPIENT_EMAILS)
+        
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("Email notification sent")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+def get_pybit_symbol(ccxt_symbol):
+    """Convert CCXT spot symbol to Bybit symbol format"""
+    return ccxt_symbol.replace('/', '')  # Turns 'BTC/USDT' into 'BTCUSDT'
+
+def gauss(x, h):
+    """Gaussian window function"""
+    return np.exp(-(x ** 2) / (h ** 2 * 2))
+
+def calculate_nwe(src, h, mult, repaint):
+    """Calculate Nadaraya-Watson Envelope"""
+    n = len(src)
+    out = np.zeros(n)
+    mae = np.zeros(n)
+    upper = np.zeros(n)
+    lower = np.zeros(n)
+    
+    if not repaint:
+        coefs = np.array([gauss(i, h) for i in range(n)])
+        den = np.sum(coefs)
+        
+        for i in range(n):
+            out[i] = np.sum(src * coefs) / den
+        
+        mae = pd.Series(np.abs(src - out)).rolling(499).mean().values * mult
+        upper = out + mae
+        lower = out - mae
+    else:
+        nwe = []
+        sae = 0.0
+        
+        for i in range(n):
+            sum_val = 0.0
+            sumw = 0.0
+            for j in range(n):
+                w = gauss(i - j, h)
+                sum_val += src[j] * w
+                sumw += w
+            y2 = sum_val / sumw
+            nwe.append(y2)
+            sae += np.abs(src[i] - y2)
+        
+        sae = (sae / n) * mult
+        
+        for i in range(n):
+            upper[i] = nwe[i] + sae
+            lower[i] = nwe[i] - sae
+            out[i] = nwe[i]
+    
+    return out, upper, lower
+
+def detect_crossunder(close, lower):
+    """Detect crossunder condition"""
+    return (close.shift(1) > lower.shift(1)) & (close < lower)
+
+def fetch_market_data(symbol, timeframe, limit=500):
+    """Fetch OHLCV data with proper timezone handling"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(LAGOS_TZ)
+        df.set_index('timestamp', inplace=True)
+        df['EMA'] = df['close'].ewm(span=len_ema, adjust=False).mean()
+        return df
+    except Exception as e:
+        print(f"Error fetching market data: {e}")
+        return None
+
+def detect_trend(df, candle_index):
+    """Determine trend for a specific candle"""
+    if candle_index < 1 or candle_index >= len(df):
+        return "Sideways"
+    
+    ema_current = df['EMA'].iloc[candle_index]
+    ema_prev = df['EMA'].iloc[candle_index-1]
+    price = df['close'].iloc[candle_index]
+    
+    if ema_current > ema_prev and price > ema_current:
+        return "Uptrend"
+    elif ema_current < ema_prev and price < ema_current:
+        return "Downtrend"
+    return "Sideways"
+
+def get_most_recent_open_trade_symbol():
+    """Get symbol of most recent open trade"""
+    try:
+        executions = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if executions["retCode"] != 0:
+            print(f"Error fetching executions: {executions['retMsg']}")
+            return None
+            
+        if not executions["result"]["list"]:
+            return None
+            
+        for trade in sorted(executions["result"]["list"], 
+                          key=lambda x: int(x["execTime"]), 
+                          reverse=True):
+            if trade["execType"] == "Trade" and float(trade["execQty"]) > 0:
+                positions = session.get_positions(
+                    category="linear",
+                    symbol=trade["symbol"]
+                )
+                
+                if positions["retCode"] == 0 and positions["result"]["list"]:
+                    for position in positions["result"]["list"]:
+                        if position["symbol"] == trade["symbol"] and float(position["size"]) > 0:
+                            return f"{trade['symbol'].replace('USDT', '')}/USDT"  # Spot format
+        
+        return None
+    except Exception as e:
+        print(f"Error checking trades: {e}")
+        return None
+
+def get_open_trade(symbol):
+    """Get details of open trade for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        positions = session.get_positions(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if positions["retCode"] == 0 and positions["result"]["list"]:
+            for position in positions["result"]["list"]:
+                if position["symbol"] == pybit_symbol and float(position["size"]) > 0:
+                    unrealized_pnl = float(position['unrealisedPnl'])
+                    return {
+                        'side': position['side'],
+                        'size': float(position['size']),
+                        'entry_price': float(position['avgPrice']),
+                        'unrealized_pnl': unrealized_pnl,
+                        'pnl_status': format_pnl(unrealized_pnl),
+                        'created_time': datetime.fromtimestamp(int(position['createdTime'])/1000, UTC_TZ).astimezone(LAGOS_TZ)
+                    }
+        return None
+    except Exception as e:
+        print(f"Error checking open positions: {e}")
+        return None
+
+def get_last_closed_trade():
+    """Get details of last closed trade"""
+    try:
+        trades = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if trades["retCode"] != 0:
+            print(f"Error fetching trades: {trades['retMsg']}")
+            return None
+            
+        trades = trades["result"]["list"]
+        if not trades:
+            return None
+
+        for trade in sorted(trades, key=lambda x: int(x["execTime"]), reverse=True):
+            symbol = trade["symbol"]
+            positions = session.get_positions(
+                category="linear",
+                symbol=symbol
+            )
+            
+            if positions["retCode"] != 0:
+                continue
+                
+            position_open = any(float(p["size"]) > 0 for p in positions["result"]["list"])
+            
+            if not position_open and trade["closedSize"]:
+                utc_time = datetime.fromtimestamp(int(trade["execTime"])/1000, UTC_TZ)
+                lagos_time = utc_time.astimezone(LAGOS_TZ)
+                
+                if trade['side'] == 'Sell':  # Closing long
+                    trade_type = 'Long Close'
+                    actual_side = 'Buy'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                else:  # Closing short
+                    trade_type = 'Short Close'
+                    actual_side = 'Sell'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+                
+                return {
+                    'symbol': f"{symbol.replace('USDT', '')}/USDT",  # Spot format
+                    'type': trade_type,
+                    'side': actual_side,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'pnl': pnl_percent,
+                    'pnl_status': format_pnl(pnl_percent),
+                    'closed_time': lagos_time,
+                    'utc_close_time': utc_time
+                }
+        return None
+    except Exception as e:
+        print(f"Error fetching trade history: {e}")
+        return None
+
+def analyze_trend_since_close(symbol, since_timestamp):
+    """Analyze trend changes since trade close (matches your reference script)"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None or len(df) < 2:
+            return None, "Error: Not enough market data"
+        
+        # Find the candle where trade was closed
+        close_candle_idx = df.index.get_indexer([since_timestamp], method='nearest')[0]
+        if close_candle_idx < 1:
+            close_candle_idx = 1
+        
+        # Get trend at close time
+        trend_at_close = detect_trend(df, close_candle_idx)
+        
+        # Check for counter-trend closing
+        last_trade = get_last_closed_trade()
+        if last_trade:
+            if (last_trade['side'] == "Sell" and trend_at_close == "Uptrend") or \
+               (last_trade['side'] == "Buy" and trend_at_close == "Downtrend"):
+                return None, "⚠️ COUNTER-TREND CLOSING DETECTED"
+        
+        # Analyze trend changes
+        current_trend = trend_at_close
+        first_flip = None
+        
+        for i in range(close_candle_idx + 1, len(df)):
+            new_trend = detect_trend(df, i)
+            
+            if new_trend != current_trend and new_trend in ["Uptrend", "Downtrend"]:
+                first_flip = {
+                    'time': df.index[i],
+                    'new_trend': new_trend,
+                    'price': df['close'].iloc[i],
+                    'candle_time': df.index[i].strftime('%Y-%m-%d %H:%M:%S')
+                }
+                break
+        
+        if first_flip:
+            duration = first_flip['time'] - since_timestamp
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            return first_flip, f"FIRST TREND FLIP: {first_flip['new_trend']} at {first_flip['candle_time']} ({hours}h {minutes}m after close)"
+        
+        return None, "✅ No trend flips detected since closing"
+    
+    except Exception as e:
+        print(f"Error analyzing trend: {e}")
+        return None, f"Error analyzing trend: {e}"
+
+def check_crossunder(symbol):
+    """Check for crossunder condition on specified symbol"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        src = df['close'].values
+        out, upper, lower = calculate_nwe(src, h, mult, repaint)
+        
+        close_series = pd.Series(src)
+        lower_series = pd.Series(lower)
+        crossunder = detect_crossunder(close_series, lower_series)
+        
+        return crossunder.iloc[-2]
+    except Exception as e:
+        print(f"Error checking crossunder: {e}")
+        return False
+
+def cancel_all_pending_orders(symbol):
+    """Cancel all pending orders for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        response = session.cancel_all_orders(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if response["retCode"] == 0:
+            print("All pending orders canceled")
+            return True
+        else:
+            print(f"Failed to cancel orders: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error canceling orders: {e}")
+        return False
+
+def place_long_market_order(symbol, usdt_amount=70):
+    """Place long market order for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        
+        ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+        market_price = float(ticker["result"]["list"][0]["lastPrice"])
+        
+        instrument_info = session.get_instruments_info(category="linear", symbol=pybit_symbol)
+        lot_size = instrument_info["result"]["list"][0]["lotSizeFilter"]
+        qty_step = float(lot_size["qtyStep"])
+        
+        quantity = round((usdt_amount / market_price) / qty_step) * qty_step
+        
+        # Calculate stop loss and take profit prices
+        stop_loss_price = market_price * (1 - STOP_LOSS_PERCENT/100)
+        take_profit_price = market_price * (1 + TAKE_PROFIT_PERCENT/100)
+        
+        response = session.place_order(
+            category="linear",
+            symbol=pybit_symbol,
+            side="Buy",
+            orderType="Market",
+            qty=str(quantity),
+            stopLoss=str(stop_loss_price),
+            takeProfit=str(take_profit_price)
+        )
+        
+        if response["retCode"] == 0:
+            msg = f"""Long market order placed for {quantity} {symbol.split('/')[0]} at {market_price}
+Stop Loss: {stop_loss_price:.4f} ({STOP_LOSS_PERCENT}%)
+Take Profit: {take_profit_price:.4f} ({TAKE_PROFIT_PERCENT}%)"""
+            print(msg)
+            send_email("Long Position Opened", msg)
+            return True
+        else:
+            print(f"Failed to place order: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error placing long order: {e}")
+        return False
+
+def close_short_position(symbol):
+    """Close short position for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        position = get_open_trade(symbol)
+        
+        if position and position['side'] == 'Sell':
+            ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+            market_price = float(ticker["result"]["list"][0]["lastPrice"])
+            
+            response = session.place_order(
+                category="linear",
+                symbol=pybit_symbol,
+                side="Buy",
+                orderType="Market",
+                qty=str(position['size'])
+            )
+            
+            if response["retCode"] == 0:
+                msg = f"Short position closed at {market_price}. PnL: {position['pnl_status']}"
+                print(msg)
+                send_email("Short Position Closed", msg)
+                return True
+            else:
+                print(f"Failed to close short position: {response['retMsg']}")
+                return False
+        return False
+    except Exception as e:
+        print(f"Error closing short position: {e}")
+        return False
+
+def main():
+    print(f"\n🚀 Starting Crossunder Strategy at {datetime.now(LAGOS_TZ).strftime('%Y-%m-%d %H:%M:%S')} Lagos Time\n")
+    
+    # 1. Check for any open trades
+    open_symbol = get_most_recent_open_trade_symbol()
+    if open_symbol:
+        print(f"🔍 Open Trade Detected:")
+        open_trade = get_open_trade(open_symbol)
+        
+        if open_trade:
+            print(f"Symbol: {open_symbol}")
+            print(f"Direction: {'SHORT' if open_trade['side'] == 'Sell' else 'LONG'}")
+            print(f"Entry Price: {open_trade['entry_price']}")
+            print(f"Size: {open_trade['size']}")
+            print(f"Unrealized PnL: {open_trade['pnl_status']}")
+            print(f"Created Time: {open_trade['created_time'].strftime('%Y-%m-%d %H:%M:%S')} Lagos Time")
+            print("\nOpen LONG trade - doing nothing as per strategy")
+            
+            # Handle open SHORT trade
+            if open_trade['side'] == 'Sell':
+                if check_crossunder(open_symbol):
+                    print("\n⚠️ CROSSUNDER DETECTED - Closing SHORT Position")
+                    if close_short_position(open_symbol):
+                        print("✅ SHORT Position Closed Successfully")
+                    else:
+                        print("❌ Failed to Close SHORT Position")
+                else:
+                    print("\n✅ No Crossunder - Keeping SHORT Position Open")
+            
+            #print("\n🛑 Strategy Blocked: Existing Open Position Detected")
+            return
+        
+        else:
+            print("\nℹ️ No Valid Open Positions Found")
+    
+    # 2. Check last closed trade
+    last_trade = get_last_closed_trade()
+    if not last_trade:
+        print("\nℹ️ No Previous Trades Found - Standing By")
+        return
+    
+    print(f"\n🔍 Last Closed Trade:")
+    print(f"Symbol: {last_trade['symbol']}")
+    print(f"Type: {last_trade['type']}")
+    print(f"Direction: {'LONG' if last_trade['side'] == 'Buy' else 'SHORT'}")
+    print(f"Entry Price: {last_trade['entry_price']}")
+    print(f"Exit Price: {last_trade['exit_price']}")
+    print(f"Closed Time: {last_trade['closed_time'].strftime('%Y-%m-%d %H:%M:%S')} Lagos Time")
+    print(f"PnL: {last_trade['pnl_status']}")
+    
+    # Only act if last closed was LONG
+    if last_trade['side'] == 'Buy':
+        # Analyze trend since close
+        flip_info, trend_message = analyze_trend_since_close(last_trade['symbol'], last_trade['closed_time'])
+        print(f"\n📈 Trend Analysis:")
+        print(trend_message)
+        
+        if "COUNTER-TREND" in trend_message:
+            print("🛑 Not Entering New Trade Due to Counter-Trend Close")
+        elif "FLIP" in trend_message:
+            print("🛑 Not Entering New Trade Due to Trend Flip")
+        else:
+            # Check current market data
+            df = fetch_market_data(last_trade['symbol'], timeframe, limit)
+            if df is not None:
+                current_trend = detect_trend(df, len(df)-1)
+                print(f"\n📊 Current Market Trend: {current_trend}")
+                
+                if check_crossunder(last_trade['symbol']):
+                    print("\n⚠️ CROSSUNDER DETECTED - Preparing to Enter LONG")
+                    if current_trend in ("Uptrend", "Sideways"):
+                        if cancel_all_pending_orders(last_trade['symbol']):
+                            print("✅ Orders Canceled - Entering LONG")
+                            place_long_market_order(last_trade['symbol'])
+                        else:
+                            print("❌ Failed to Cancel Pending Orders")
+                    else:
+                        print("🛑 Crossunder Ignored - Market in Downtrend")
+                else:
+                    print("\n✅ No Crossunder Detected - Standing By")
+    
+    print("\n✅ Strategy Execution Completed")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
+print("""
+  _________________________________
+ /                                 \\
+|   C R O S S O V E R  SECRETS   |
+ \\_________________________________/
+        \\                   /
+         \\                 /
+          `\\_____________/'
+""")
+
+
+
+import ccxt
+import pandas as pd
+import numpy as np
+from pybit.unified_trading import HTTP
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+import pytz
+
+# Initialize exchanges and trading session
+exchange = ccxt.coinbase({
+    'options': {
+        'defaultType': 'spot',  # Explicitly set to spot markets
+    }
+})
+session = HTTP(
+    api_key="4eQbf5STelVE40HOtB",
+    api_secret="bzo7oS1u8jxHIpkpFzy9mDLMvRrARJcXlKxt",
+    demo=True
+)
+
+# Timezone setup
+LAGOS_TZ = pytz.timezone('Africa/Lagos')
+UTC_TZ = pytz.UTC
+
+# Settings
+timeframe = '15m'
+limit = 500
+h = 8.0
+mult = 3.0
+repaint = True
+len_ema = 200
+STOP_LOSS_PERCENT = 2.5  # 2% stop loss
+TAKE_PROFIT_PERCENT = 10.0  # 10% take profit
+
+# Email settings
+SENDER_EMAIL = "dahmadu071@gmail.com"
+RECIPIENT_EMAILS = ["teejeedeeone@gmail.com"]
+EMAIL_PASSWORD = "oase wivf hvqn lyhr"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+def format_pnl(pnl):
+    """Format PnL with proper sign and profit/loss indication"""
+    if pnl > 0:
+        return f"+{pnl:.2f}% (Profit)"
+    elif pnl < 0:
+        return f"{pnl:.2f}% (Loss)"
+    return f"{pnl:.2f}% (Break-even)"
+
+def send_email(subject, body):
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = ", ".join(RECIPIENT_EMAILS)
+        
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("Email notification sent")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+def get_pybit_symbol(ccxt_symbol):
+    """Convert CCXT spot symbol to Bybit symbol format"""
+    return ccxt_symbol.replace('/', '')  # Turns 'BTC/USDT' into 'BTCUSDT'
+
+def gauss(x, h):
+    """Gaussian window function"""
+    return np.exp(-(x ** 2) / (h ** 2 * 2))
+
+def calculate_nwe(src, h, mult, repaint):
+    """Calculate Nadaraya-Watson Envelope"""
+    n = len(src)
+    out = np.zeros(n)
+    mae = np.zeros(n)
+    upper = np.zeros(n)
+    lower = np.zeros(n)
+    
+    if not repaint:
+        coefs = np.array([gauss(i, h) for i in range(n)])
+        den = np.sum(coefs)
+        
+        for i in range(n):
+            out[i] = np.sum(src * coefs) / den
+        
+        mae = pd.Series(np.abs(src - out)).rolling(499).mean().values * mult
+        upper = out + mae
+        lower = out - mae
+    else:
+        nwe = []
+        sae = 0.0
+        
+        for i in range(n):
+            sum_val = 0.0
+            sumw = 0.0
+            for j in range(n):
+                w = gauss(i - j, h)
+                sum_val += src[j] * w
+                sumw += w
+            y2 = sum_val / sumw
+            nwe.append(y2)
+            sae += np.abs(src[i] - y2)
+        
+        sae = (sae / n) * mult
+        
+        for i in range(n):
+            upper[i] = nwe[i] + sae
+            lower[i] = nwe[i] - sae
+            out[i] = nwe[i]
+    
+    return out, upper, lower
+
+def detect_crossover(close, upper):
+    """Detect if price has crossed above the upper envelope"""
+    return (close.shift(1) < upper.shift(1)) & (close > upper)
+
+def fetch_market_data(symbol, timeframe, limit=500):
+    """Fetch OHLCV data with proper timezone handling"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(LAGOS_TZ)
+        df.set_index('timestamp', inplace=True)
+        df['EMA'] = df['close'].ewm(span=len_ema, adjust=False).mean()
+        return df
+    except Exception as e:
+        print(f"Error fetching market data: {e}")
+        return None
+
+def detect_trend(df, candle_index):
+    """Determine trend for a specific candle"""
+    if candle_index < 1 or candle_index >= len(df):
+        return "Sideways"
+    
+    ema_current = df['EMA'].iloc[candle_index]
+    ema_prev = df['EMA'].iloc[candle_index-1]
+    price = df['close'].iloc[candle_index]
+    
+    if ema_current > ema_prev and price > ema_current:
+        return "Uptrend"
+    elif ema_current < ema_prev and price < ema_current:
+        return "Downtrend"
+    return "Sideways"
+
+def get_most_recent_open_trade_symbol():
+    """Get symbol of most recent open trade"""
+    try:
+        executions = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if executions["retCode"] != 0:
+            print(f"Error fetching executions: {executions['retMsg']}")
+            return None
+            
+        if not executions["result"]["list"]:
+            return None
+            
+        for trade in sorted(executions["result"]["list"], 
+                          key=lambda x: int(x["execTime"]), 
+                          reverse=True):
+            if trade["execType"] == "Trade" and float(trade["execQty"]) > 0:
+                positions = session.get_positions(
+                    category="linear",
+                    symbol=trade["symbol"]
+                )
+                
+                if positions["retCode"] == 0 and positions["result"]["list"]:
+                    for position in positions["result"]["list"]:
+                        if position["symbol"] == trade["symbol"] and float(position["size"]) > 0:
+                            return f"{trade['symbol'].replace('USDT', '')}/USDT"  # Spot format
+        
+        return None
+    except Exception as e:
+        print(f"Error checking trades: {e}")
+        return None
+
+def get_open_trade(symbol):
+    """Get details of open trade for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        positions = session.get_positions(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if positions["retCode"] == 0 and positions["result"]["list"]:
+            for position in positions["result"]["list"]:
+                if position["symbol"] == pybit_symbol and float(position["size"]) > 0:
+                    unrealized_pnl = float(position['unrealisedPnl'])
+                    return {
+                        'side': position['side'],
+                        'size': float(position['size']),
+                        'entry_price': float(position['avgPrice']),
+                        'unrealized_pnl': unrealized_pnl,
+                        'pnl_status': format_pnl(unrealized_pnl),
+                        'created_time': datetime.fromtimestamp(int(position['createdTime'])/1000, UTC_TZ).astimezone(LAGOS_TZ)
+                    }
+        return None
+    except Exception as e:
+        print(f"Error checking open positions: {e}")
+        return None
+
+def get_last_closed_trade():
+    """Get details of last closed trade"""
+    try:
+        trades = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if trades["retCode"] != 0:
+            print(f"Error fetching trades: {trades['retMsg']}")
+            return None
+            
+        trades = trades["result"]["list"]
+        if not trades:
+            return None
+
+        for trade in sorted(trades, key=lambda x: int(x["execTime"]), reverse=True):
+            symbol = trade["symbol"]
+            positions = session.get_positions(
+                category="linear",
+                symbol=symbol
+            )
+            
+            if positions["retCode"] != 0:
+                continue
+                
+            position_open = any(float(p["size"]) > 0 for p in positions["result"]["list"])
+            
+            if not position_open and trade["closedSize"]:
+                utc_time = datetime.fromtimestamp(int(trade["execTime"])/1000, UTC_TZ)
+                lagos_time = utc_time.astimezone(LAGOS_TZ)
+                
+                if trade['side'] == 'Sell':  # Closing long
+                    trade_type = 'Long Close'
+                    actual_side = 'Buy'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                else:  # Closing short
+                    trade_type = 'Short Close'
+                    actual_side = 'Sell'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+                
+                return {
+                    'symbol': f"{symbol.replace('USDT', '')}/USDT",  # Spot format
+                    'type': trade_type,
+                    'side': actual_side,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'pnl': pnl_percent,
+                    'pnl_status': format_pnl(pnl_percent),
+                    'closed_time': lagos_time,
+                    'utc_close_time': utc_time
+                }
+        return None
+    except Exception as e:
+        print(f"Error fetching trade history: {e}")
+        return None
+
+def analyze_trend_since_close(symbol, since_timestamp):
+    """Analyze trend changes since trade close"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None or len(df) < 2:
+            return None, "Error: Not enough market data"
+        
+        close_candle_idx = df.index.get_indexer([since_timestamp], method='nearest')[0]
+        if close_candle_idx < 1:
+            close_candle_idx = 1
+        
+        trend_at_close = detect_trend(df, close_candle_idx)
+        
+        last_trade = get_last_closed_trade()
+        if last_trade:
+            if (last_trade['side'] == "Sell" and trend_at_close == "Uptrend") or \
+               (last_trade['side'] == "Buy" and trend_at_close == "Downtrend"):
+                return None, "⚠️ COUNTER-TREND CLOSING DETECTED"
+        
+        current_trend = trend_at_close
+        first_flip = None
+        
+        for i in range(close_candle_idx + 1, len(df)):
+            new_trend = detect_trend(df, i)
+            
+            if new_trend != current_trend and new_trend in ["Uptrend", "Downtrend"]:
+                first_flip = {
+                    'time': df.index[i],
+                    'new_trend': new_trend,
+                    'price': df['close'].iloc[i],
+                    'candle_time': df.index[i].strftime('%Y-%m-%d %H:%M:%S')
+                }
+                break
+        
+        if first_flip:
+            duration = first_flip['time'] - since_timestamp
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            return first_flip, f"FIRST TREND FLIP: {first_flip['new_trend']} at {first_flip['candle_time']} ({hours}h {minutes}m after close)"
+        
+        return None, "✅ No trend flips detected since closing"
+    
+    except Exception as e:
+        print(f"Error analyzing trend: {e}")
+        return None, f"Error analyzing trend: {e}"
+
+def check_crossover(symbol):
+    """Check for crossover condition on specified symbol"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None:
+            return False
+            
+        src = df['close'].values
+        out, upper, lower = calculate_nwe(src, h, mult, repaint)
+        
+        close_series = pd.Series(src)
+        upper_series = pd.Series(upper)
+        crossover = detect_crossover(close_series, upper_series)
+        
+        return crossover.iloc[-2]  # Check most recent candle
+    except Exception as e:
+        print(f"Error checking crossover: {e}")
+        return False
+
+def cancel_all_pending_orders(symbol):
+    """Cancel all pending orders for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        response = session.cancel_all_orders(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if response["retCode"] == 0:
+            print("All pending orders canceled")
+            return True
+        else:
+            print(f"Failed to cancel orders: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error canceling orders: {e}")
+        return False
+
+def close_long_position(symbol):
+    """Close long position for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        position = get_open_trade(symbol)
+        
+        if position and position['side'] == 'Buy':
+            ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+            market_price = float(ticker["result"]["list"][0]["lastPrice"])
+            
+            response = session.place_order(
+                category="linear",
+                symbol=pybit_symbol,
+                side="Sell",
+                orderType="Market",
+                qty=str(position['size'])
+            )
+            
+            if response["retCode"] == 0:
+                msg = f"Long position closed at {market_price}. PnL: {position['pnl_status']}"
+                print(msg)
+                send_email("Long Position Closed", msg)
+                return True
+            else:
+                print(f"Failed to close long position: {response['retMsg']}")
+                return False
+        return False
+    except Exception as e:
+        print(f"Error closing long position: {e}")
+        return False
+
+def place_short_market_order(symbol, usdt_amount=70):
+    """Place short market order for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        
+        ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+        market_price = float(ticker["result"]["list"][0]["lastPrice"])
+        
+        instrument_info = session.get_instruments_info(category="linear", symbol=pybit_symbol)
+        lot_size = instrument_info["result"]["list"][0]["lotSizeFilter"]
+        qty_step = float(lot_size["qtyStep"])
+        
+        quantity = round((usdt_amount / market_price) / qty_step) * qty_step
+        
+        # Calculate stop loss and take profit prices
+        stop_loss_price = market_price * (1 + STOP_LOSS_PERCENT/100)
+        take_profit_price = market_price * (1 - TAKE_PROFIT_PERCENT/100)
+        
+        response = session.place_order(
+            category="linear",
+            symbol=pybit_symbol,
+            side="Sell",
+            orderType="Market",
+            qty=str(quantity),
+            stopLoss=str(stop_loss_price),
+            takeProfit=str(take_profit_price)
+        )
+        
+        if response["retCode"] == 0:
+            msg = f"""Short market order placed for {quantity} {symbol.split('/')[0]} at {market_price}
+Stop Loss: {stop_loss_price:.4f} ({STOP_LOSS_PERCENT}%)
+Take Profit: {take_profit_price:.4f} ({TAKE_PROFIT_PERCENT}%)"""
+            print(msg)
+            send_email("Short Position Opened", msg)
+            return True
+        else:
+            print(f"Failed to place order: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error placing short order: {e}")
+        return False
+
+def main():
+    print(f"\n🚀 Starting Crossover Strategy at {datetime.now(LAGOS_TZ).strftime('%Y-%m-%d %H:%M:%S')} Lagos Time\n")
+    
+    # 1. Check for any open trades
+    open_symbol = get_most_recent_open_trade_symbol()
+    if open_symbol:
+        print(f"🔍 Open Trade Detected on {open_symbol}:")
+        open_trade = get_open_trade(open_symbol)
+        
+        if open_trade:
+            print(f"Direction: {'SHORT' if open_trade['side'] == 'Sell' else 'LONG'}")
+            print(f"Entry Price: {open_trade['entry_price']}")
+            print(f"Size: {open_trade['size']}")
+            print(f"Unrealized PnL: {open_trade['pnl_status']}")
+            print(f"Created Time: {open_trade['created_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Handle open LONG trade (close on crossover)
+            if open_trade['side'] == 'Buy':
+                if check_crossover(open_symbol):
+                    print("\n⚠️ CROSSOVER DETECTED - Closing LONG Position")
+                    if close_long_position(open_symbol):
+                        print("✅ LONG Position Closed Successfully")
+                    else:
+                        print("❌ Failed to Close LONG Position")
+                else:
+                    print("\n✅ No Crossover - Keeping LONG Position Open")
+            
+            return
+        
+    # 2. Check last closed trade
+    last_trade = get_last_closed_trade()
+    if not last_trade:
+        print("\nℹ️ No Previous Trades Found - Standing By")
+        return
+    
+    print(f"\n🔍 Last Closed Trade:")
+    print(f"Symbol: {last_trade['symbol']}")
+    print(f"Type: {last_trade['type']}")
+    print(f"Direction: {'LONG' if last_trade['side'] == 'Buy' else 'SHORT'}")
+    print(f"Entry Price: {last_trade['entry_price']}")
+    print(f"Exit Price: {last_trade['exit_price']}")
+    print(f"Closed Time: {last_trade['closed_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"PnL: {last_trade['pnl_status']}")
+    
+    # Only act if last closed was SHORT trade
+    if last_trade['side'] == 'Sell':
+        # Analyze trend since close
+        flip_info, trend_message = analyze_trend_since_close(last_trade['symbol'], last_trade['closed_time'])
+        print(f"\n📈 Trend Analysis:")
+        print(trend_message)
+        
+        if "COUNTER-TREND" in trend_message:
+            print("🛑 Not Entering New Trade Due to Counter-Trend Close")
+        elif "FLIP" in trend_message:
+            print("🛑 Not Entering New Trade Due to Trend Flip")
+        else:
+            # Check current market data
+            df = fetch_market_data(last_trade['symbol'], timeframe, limit)
+            if df is not None:
+                current_trend = detect_trend(df, len(df)-1)
+                print(f"\n📊 Current Market Trend: {current_trend}")
+                
+                if check_crossover(last_trade['symbol']):
+                    print("\n⚠️ CROSSOVER DETECTED - Preparing to Enter SHORT")
+                    if current_trend in ("Downtrend", "Sideways"):
+                        if cancel_all_pending_orders(last_trade['symbol']):
+                            print("✅ Orders Canceled - Entering SHORT")
+                            place_short_market_order(last_trade['symbol'])
+                        else:
+                            print("❌ Failed to Cancel Pending Orders")
+                    else:
+                        print("🛑 Crossover Ignored - Market in Uptrend")
+                else:
+                    print("\n✅ No Crossover Detected - Standing By")
+    
+    print("\n✅ Strategy Execution Completed")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#######################################################################################################################################################
+#################################
+###################
+###############
+
+
+
+print("""
+  ⚙️▬▬ι═══════ﺤ -═══════ι▬▬⚙️
+     C R O S S U N D E R  
+  ⚙️▬▬ι═══════ﺤ -═══════ι▬▬⚙️
+""")
+
+
+
+import ccxt
+import pandas as pd
+import numpy as np
+from pybit.unified_trading import HTTP
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+import pytz
+
+# Initialize exchanges and trading session
+exchange = ccxt.bingx({
+    'options': {
+        'defaultType': 'spot',  # Explicitly set to spot markets
+    }
+})
+session = HTTP(
+    api_key="4eQbf5STelVE40HOtB",
+    api_secret="bzo7oS1u8jxHIpkpFzy9mDLMvRrARJcXlKxt",
+    demo=True
+)
+
+# Timezone setup
+LAGOS_TZ = pytz.timezone('Africa/Lagos')
+UTC_TZ = pytz.UTC
+
+# Settings
+timeframe = '15m'
+limit = 500
+h = 8.0
+mult = 3.0
+repaint = True
+len_ema = 200
+STOP_LOSS_PERCENT = 2.5  # 2% stop loss
+TAKE_PROFIT_PERCENT = 10.0  # 10% take profit
+
+# Email settings
+SENDER_EMAIL = "dahmadu071@gmail.com"
+RECIPIENT_EMAILS = ["teejeedeeone@gmail.com"]
+EMAIL_PASSWORD = "oase wivf hvqn lyhr"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+def format_pnl(pnl):
+    """Format PnL with proper sign and profit/loss indication"""
+    if pnl > 0:
+        return f"+{pnl:.2f}% (Profit)"
+    elif pnl < 0:
+        return f"{pnl:.2f}% (Loss)"
+    return f"{pnl:.2f}% (Break-even)"
+
+def send_email(subject, body):
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = ", ".join(RECIPIENT_EMAILS)
+        
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("Email notification sent")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+def get_pybit_symbol(ccxt_symbol):
+    """Convert CCXT spot symbol to Bybit symbol format"""
+    return ccxt_symbol.replace('/', '')  # Turns 'BTC/USDT' into 'BTCUSDT'
+
+def gauss(x, h):
+    """Gaussian window function"""
+    return np.exp(-(x ** 2) / (h ** 2 * 2))
+
+def calculate_nwe(src, h, mult, repaint):
+    """Calculate Nadaraya-Watson Envelope"""
+    n = len(src)
+    out = np.zeros(n)
+    mae = np.zeros(n)
+    upper = np.zeros(n)
+    lower = np.zeros(n)
+    
+    if not repaint:
+        coefs = np.array([gauss(i, h) for i in range(n)])
+        den = np.sum(coefs)
+        
+        for i in range(n):
+            out[i] = np.sum(src * coefs) / den
+        
+        mae = pd.Series(np.abs(src - out)).rolling(499).mean().values * mult
+        upper = out + mae
+        lower = out - mae
+    else:
+        nwe = []
+        sae = 0.0
+        
+        for i in range(n):
+            sum_val = 0.0
+            sumw = 0.0
+            for j in range(n):
+                w = gauss(i - j, h)
+                sum_val += src[j] * w
+                sumw += w
+            y2 = sum_val / sumw
+            nwe.append(y2)
+            sae += np.abs(src[i] - y2)
+        
+        sae = (sae / n) * mult
+        
+        for i in range(n):
+            upper[i] = nwe[i] + sae
+            lower[i] = nwe[i] - sae
+            out[i] = nwe[i]
+    
+    return out, upper, lower
+
+def detect_crossunder(close, lower):
+    """Detect crossunder condition"""
+    return (close.shift(1) > lower.shift(1)) & (close < lower)
+
+def fetch_market_data(symbol, timeframe, limit=500):
+    """Fetch OHLCV data with proper timezone handling"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(LAGOS_TZ)
+        df.set_index('timestamp', inplace=True)
+        df['EMA'] = df['close'].ewm(span=len_ema, adjust=False).mean()
+        return df
+    except Exception as e:
+        print(f"Error fetching market data: {e}")
+        return None
+
+def detect_trend(df, candle_index):
+    """Determine trend for a specific candle"""
+    if candle_index < 1 or candle_index >= len(df):
+        return "Sideways"
+    
+    ema_current = df['EMA'].iloc[candle_index]
+    ema_prev = df['EMA'].iloc[candle_index-1]
+    price = df['close'].iloc[candle_index]
+    
+    if ema_current > ema_prev and price > ema_current:
+        return "Uptrend"
+    elif ema_current < ema_prev and price < ema_current:
+        return "Downtrend"
+    return "Sideways"
+
+def get_most_recent_open_trade_symbol():
+    """Get symbol of most recent open trade"""
+    try:
+        executions = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if executions["retCode"] != 0:
+            print(f"Error fetching executions: {executions['retMsg']}")
+            return None
+            
+        if not executions["result"]["list"]:
+            return None
+            
+        for trade in sorted(executions["result"]["list"], 
+                          key=lambda x: int(x["execTime"]), 
+                          reverse=True):
+            if trade["execType"] == "Trade" and float(trade["execQty"]) > 0:
+                positions = session.get_positions(
+                    category="linear",
+                    symbol=trade["symbol"]
+                )
+                
+                if positions["retCode"] == 0 and positions["result"]["list"]:
+                    for position in positions["result"]["list"]:
+                        if position["symbol"] == trade["symbol"] and float(position["size"]) > 0:
+                            return f"{trade['symbol'].replace('USDT', '')}/USDT"  # Spot format
+        
+        return None
+    except Exception as e:
+        print(f"Error checking trades: {e}")
+        return None
+
+def get_open_trade(symbol):
+    """Get details of open trade for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        positions = session.get_positions(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if positions["retCode"] == 0 and positions["result"]["list"]:
+            for position in positions["result"]["list"]:
+                if position["symbol"] == pybit_symbol and float(position["size"]) > 0:
+                    unrealized_pnl = float(position['unrealisedPnl'])
+                    return {
+                        'side': position['side'],
+                        'size': float(position['size']),
+                        'entry_price': float(position['avgPrice']),
+                        'unrealized_pnl': unrealized_pnl,
+                        'pnl_status': format_pnl(unrealized_pnl),
+                        'created_time': datetime.fromtimestamp(int(position['createdTime'])/1000, UTC_TZ).astimezone(LAGOS_TZ)
+                    }
+        return None
+    except Exception as e:
+        print(f"Error checking open positions: {e}")
+        return None
+
+def get_last_closed_trade():
+    """Get details of last closed trade"""
+    try:
+        trades = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if trades["retCode"] != 0:
+            print(f"Error fetching trades: {trades['retMsg']}")
+            return None
+            
+        trades = trades["result"]["list"]
+        if not trades:
+            return None
+
+        for trade in sorted(trades, key=lambda x: int(x["execTime"]), reverse=True):
+            symbol = trade["symbol"]
+            positions = session.get_positions(
+                category="linear",
+                symbol=symbol
+            )
+            
+            if positions["retCode"] != 0:
+                continue
+                
+            position_open = any(float(p["size"]) > 0 for p in positions["result"]["list"])
+            
+            if not position_open and trade["closedSize"]:
+                utc_time = datetime.fromtimestamp(int(trade["execTime"])/1000, UTC_TZ)
+                lagos_time = utc_time.astimezone(LAGOS_TZ)
+                
+                if trade['side'] == 'Sell':  # Closing long
+                    trade_type = 'Long Close'
+                    actual_side = 'Buy'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                else:  # Closing short
+                    trade_type = 'Short Close'
+                    actual_side = 'Sell'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+                
+                return {
+                    'symbol': f"{symbol.replace('USDT', '')}/USDT",  # Spot format
+                    'type': trade_type,
+                    'side': actual_side,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'pnl': pnl_percent,
+                    'pnl_status': format_pnl(pnl_percent),
+                    'closed_time': lagos_time,
+                    'utc_close_time': utc_time
+                }
+        return None
+    except Exception as e:
+        print(f"Error fetching trade history: {e}")
+        return None
+
+def analyze_trend_since_close(symbol, since_timestamp):
+    """Analyze trend changes since trade close (matches your reference script)"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None or len(df) < 2:
+            return None, "Error: Not enough market data"
+        
+        # Find the candle where trade was closed
+        close_candle_idx = df.index.get_indexer([since_timestamp], method='nearest')[0]
+        if close_candle_idx < 1:
+            close_candle_idx = 1
+        
+        # Get trend at close time
+        trend_at_close = detect_trend(df, close_candle_idx)
+        
+        # Check for counter-trend closing
+        last_trade = get_last_closed_trade()
+        if last_trade:
+            if (last_trade['side'] == "Sell" and trend_at_close == "Uptrend") or \
+               (last_trade['side'] == "Buy" and trend_at_close == "Downtrend"):
+                return None, "⚠️ COUNTER-TREND CLOSING DETECTED"
+        
+        # Analyze trend changes
+        current_trend = trend_at_close
+        first_flip = None
+        
+        for i in range(close_candle_idx + 1, len(df)):
+            new_trend = detect_trend(df, i)
+            
+            if new_trend != current_trend and new_trend in ["Uptrend", "Downtrend"]:
+                first_flip = {
+                    'time': df.index[i],
+                    'new_trend': new_trend,
+                    'price': df['close'].iloc[i],
+                    'candle_time': df.index[i].strftime('%Y-%m-%d %H:%M:%S')
+                }
+                break
+        
+        if first_flip:
+            duration = first_flip['time'] - since_timestamp
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            return first_flip, f"FIRST TREND FLIP: {first_flip['new_trend']} at {first_flip['candle_time']} ({hours}h {minutes}m after close)"
+        
+        return None, "✅ No trend flips detected since closing"
+    
+    except Exception as e:
+        print(f"Error analyzing trend: {e}")
+        return None, f"Error analyzing trend: {e}"
+
+def check_crossunder(symbol):
+    """Check for crossunder condition on specified symbol"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        src = df['close'].values
+        out, upper, lower = calculate_nwe(src, h, mult, repaint)
+        
+        close_series = pd.Series(src)
+        lower_series = pd.Series(lower)
+        crossunder = detect_crossunder(close_series, lower_series)
+        
+        return crossunder.iloc[-2]
+    except Exception as e:
+        print(f"Error checking crossunder: {e}")
+        return False
+
+def cancel_all_pending_orders(symbol):
+    """Cancel all pending orders for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        response = session.cancel_all_orders(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if response["retCode"] == 0:
+            print("All pending orders canceled")
+            return True
+        else:
+            print(f"Failed to cancel orders: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error canceling orders: {e}")
+        return False
+
+def place_long_market_order(symbol, usdt_amount=70):
+    """Place long market order for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        
+        ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+        market_price = float(ticker["result"]["list"][0]["lastPrice"])
+        
+        instrument_info = session.get_instruments_info(category="linear", symbol=pybit_symbol)
+        lot_size = instrument_info["result"]["list"][0]["lotSizeFilter"]
+        qty_step = float(lot_size["qtyStep"])
+        
+        quantity = round((usdt_amount / market_price) / qty_step) * qty_step
+        
+        # Calculate stop loss and take profit prices
+        stop_loss_price = market_price * (1 - STOP_LOSS_PERCENT/100)
+        take_profit_price = market_price * (1 + TAKE_PROFIT_PERCENT/100)
+        
+        response = session.place_order(
+            category="linear",
+            symbol=pybit_symbol,
+            side="Buy",
+            orderType="Market",
+            qty=str(quantity),
+            stopLoss=str(stop_loss_price),
+            takeProfit=str(take_profit_price)
+        )
+        
+        if response["retCode"] == 0:
+            msg = f"""Long market order placed for {quantity} {symbol.split('/')[0]} at {market_price}
+Stop Loss: {stop_loss_price:.4f} ({STOP_LOSS_PERCENT}%)
+Take Profit: {take_profit_price:.4f} ({TAKE_PROFIT_PERCENT}%)"""
+            print(msg)
+            send_email("Long Position Opened", msg)
+            return True
+        else:
+            print(f"Failed to place order: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error placing long order: {e}")
+        return False
+
+def close_short_position(symbol):
+    """Close short position for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        position = get_open_trade(symbol)
+        
+        if position and position['side'] == 'Sell':
+            ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+            market_price = float(ticker["result"]["list"][0]["lastPrice"])
+            
+            response = session.place_order(
+                category="linear",
+                symbol=pybit_symbol,
+                side="Buy",
+                orderType="Market",
+                qty=str(position['size'])
+            )
+            
+            if response["retCode"] == 0:
+                msg = f"Short position closed at {market_price}. PnL: {position['pnl_status']}"
+                print(msg)
+                send_email("Short Position Closed", msg)
+                return True
+            else:
+                print(f"Failed to close short position: {response['retMsg']}")
+                return False
+        return False
+    except Exception as e:
+        print(f"Error closing short position: {e}")
+        return False
+
+def main():
+    print(f"\n🚀 Starting Crossunder Strategy at {datetime.now(LAGOS_TZ).strftime('%Y-%m-%d %H:%M:%S')} Lagos Time\n")
+    
+    # 1. Check for any open trades
+    open_symbol = get_most_recent_open_trade_symbol()
+    if open_symbol:
+        print(f"🔍 Open Trade Detected:")
+        open_trade = get_open_trade(open_symbol)
+        
+        if open_trade:
+            print(f"Symbol: {open_symbol}")
+            print(f"Direction: {'SHORT' if open_trade['side'] == 'Sell' else 'LONG'}")
+            print(f"Entry Price: {open_trade['entry_price']}")
+            print(f"Size: {open_trade['size']}")
+            print(f"Unrealized PnL: {open_trade['pnl_status']}")
+            print(f"Created Time: {open_trade['created_time'].strftime('%Y-%m-%d %H:%M:%S')} Lagos Time")
+            print("\nOpen LONG trade - doing nothing as per strategy")
+            
+            # Handle open SHORT trade
+            if open_trade['side'] == 'Sell':
+                if check_crossunder(open_symbol):
+                    print("\n⚠️ CROSSUNDER DETECTED - Closing SHORT Position")
+                    if close_short_position(open_symbol):
+                        print("✅ SHORT Position Closed Successfully")
+                    else:
+                        print("❌ Failed to Close SHORT Position")
+                else:
+                    print("\n✅ No Crossunder - Keeping SHORT Position Open")
+            
+            #print("\n🛑 Strategy Blocked: Existing Open Position Detected")
+            return
+        
+        else:
+            print("\nℹ️ No Valid Open Positions Found")
+    
+    # 2. Check last closed trade
+    last_trade = get_last_closed_trade()
+    if not last_trade:
+        print("\nℹ️ No Previous Trades Found - Standing By")
+        return
+    
+    print(f"\n🔍 Last Closed Trade:")
+    print(f"Symbol: {last_trade['symbol']}")
+    print(f"Type: {last_trade['type']}")
+    print(f"Direction: {'LONG' if last_trade['side'] == 'Buy' else 'SHORT'}")
+    print(f"Entry Price: {last_trade['entry_price']}")
+    print(f"Exit Price: {last_trade['exit_price']}")
+    print(f"Closed Time: {last_trade['closed_time'].strftime('%Y-%m-%d %H:%M:%S')} Lagos Time")
+    print(f"PnL: {last_trade['pnl_status']}")
+    
+    # Only act if last closed was LONG
+    if last_trade['side'] == 'Buy':
+        # Analyze trend since close
+        flip_info, trend_message = analyze_trend_since_close(last_trade['symbol'], last_trade['closed_time'])
+        print(f"\n📈 Trend Analysis:")
+        print(trend_message)
+        
+        if "COUNTER-TREND" in trend_message:
+            print("🛑 Not Entering New Trade Due to Counter-Trend Close")
+        elif "FLIP" in trend_message:
+            print("🛑 Not Entering New Trade Due to Trend Flip")
+        else:
+            # Check current market data
+            df = fetch_market_data(last_trade['symbol'], timeframe, limit)
+            if df is not None:
+                current_trend = detect_trend(df, len(df)-1)
+                print(f"\n📊 Current Market Trend: {current_trend}")
+                
+                if check_crossunder(last_trade['symbol']):
+                    print("\n⚠️ CROSSUNDER DETECTED - Preparing to Enter LONG")
+                    if current_trend in ("Uptrend", "Sideways"):
+                        if cancel_all_pending_orders(last_trade['symbol']):
+                            print("✅ Orders Canceled - Entering LONG")
+                            place_long_market_order(last_trade['symbol'])
+                        else:
+                            print("❌ Failed to Cancel Pending Orders")
+                    else:
+                        print("🛑 Crossunder Ignored - Market in Downtrend")
+                else:
+                    print("\n✅ No Crossunder Detected - Standing By")
+    
+    print("\n✅ Strategy Execution Completed")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
+print("""
+  _________________________________
+ /                                 \\
+|   C R O S S O V E R  SECRETS   |
+ \\_________________________________/
+        \\                   /
+         \\                 /
+          `\\_____________/'
+""")
+
+
+
+import ccxt
+import pandas as pd
+import numpy as np
+from pybit.unified_trading import HTTP
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+import pytz
+
+# Initialize exchanges and trading session
+exchange = ccxt.bingx({
+    'options': {
+        'defaultType': 'spot',  # Explicitly set to spot markets
+    }
+})
+session = HTTP(
+    api_key="4eQbf5STelVE40HOtB",
+    api_secret="bzo7oS1u8jxHIpkpFzy9mDLMvRrARJcXlKxt",
+    demo=True
+)
+
+# Timezone setup
+LAGOS_TZ = pytz.timezone('Africa/Lagos')
+UTC_TZ = pytz.UTC
+
+# Settings
+timeframe = '15m'
+limit = 500
+h = 8.0
+mult = 3.0
+repaint = True
+len_ema = 200
+STOP_LOSS_PERCENT = 2.5  # 2% stop loss
+TAKE_PROFIT_PERCENT = 10.0  # 10% take profit
+
+# Email settings
+SENDER_EMAIL = "dahmadu071@gmail.com"
+RECIPIENT_EMAILS = ["teejeedeeone@gmail.com"]
+EMAIL_PASSWORD = "oase wivf hvqn lyhr"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+def format_pnl(pnl):
+    """Format PnL with proper sign and profit/loss indication"""
+    if pnl > 0:
+        return f"+{pnl:.2f}% (Profit)"
+    elif pnl < 0:
+        return f"{pnl:.2f}% (Loss)"
+    return f"{pnl:.2f}% (Break-even)"
+
+def send_email(subject, body):
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = ", ".join(RECIPIENT_EMAILS)
+        
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("Email notification sent")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+def get_pybit_symbol(ccxt_symbol):
+    """Convert CCXT spot symbol to Bybit symbol format"""
+    return ccxt_symbol.replace('/', '')  # Turns 'BTC/USDT' into 'BTCUSDT'
+
+def gauss(x, h):
+    """Gaussian window function"""
+    return np.exp(-(x ** 2) / (h ** 2 * 2))
+
+def calculate_nwe(src, h, mult, repaint):
+    """Calculate Nadaraya-Watson Envelope"""
+    n = len(src)
+    out = np.zeros(n)
+    mae = np.zeros(n)
+    upper = np.zeros(n)
+    lower = np.zeros(n)
+    
+    if not repaint:
+        coefs = np.array([gauss(i, h) for i in range(n)])
+        den = np.sum(coefs)
+        
+        for i in range(n):
+            out[i] = np.sum(src * coefs) / den
+        
+        mae = pd.Series(np.abs(src - out)).rolling(499).mean().values * mult
+        upper = out + mae
+        lower = out - mae
+    else:
+        nwe = []
+        sae = 0.0
+        
+        for i in range(n):
+            sum_val = 0.0
+            sumw = 0.0
+            for j in range(n):
+                w = gauss(i - j, h)
+                sum_val += src[j] * w
+                sumw += w
+            y2 = sum_val / sumw
+            nwe.append(y2)
+            sae += np.abs(src[i] - y2)
+        
+        sae = (sae / n) * mult
+        
+        for i in range(n):
+            upper[i] = nwe[i] + sae
+            lower[i] = nwe[i] - sae
+            out[i] = nwe[i]
+    
+    return out, upper, lower
+
+def detect_crossover(close, upper):
+    """Detect if price has crossed above the upper envelope"""
+    return (close.shift(1) < upper.shift(1)) & (close > upper)
+
+def fetch_market_data(symbol, timeframe, limit=500):
+    """Fetch OHLCV data with proper timezone handling"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(LAGOS_TZ)
+        df.set_index('timestamp', inplace=True)
+        df['EMA'] = df['close'].ewm(span=len_ema, adjust=False).mean()
+        return df
+    except Exception as e:
+        print(f"Error fetching market data: {e}")
+        return None
+
+def detect_trend(df, candle_index):
+    """Determine trend for a specific candle"""
+    if candle_index < 1 or candle_index >= len(df):
+        return "Sideways"
+    
+    ema_current = df['EMA'].iloc[candle_index]
+    ema_prev = df['EMA'].iloc[candle_index-1]
+    price = df['close'].iloc[candle_index]
+    
+    if ema_current > ema_prev and price > ema_current:
+        return "Uptrend"
+    elif ema_current < ema_prev and price < ema_current:
+        return "Downtrend"
+    return "Sideways"
+
+def get_most_recent_open_trade_symbol():
+    """Get symbol of most recent open trade"""
+    try:
+        executions = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if executions["retCode"] != 0:
+            print(f"Error fetching executions: {executions['retMsg']}")
+            return None
+            
+        if not executions["result"]["list"]:
+            return None
+            
+        for trade in sorted(executions["result"]["list"], 
+                          key=lambda x: int(x["execTime"]), 
+                          reverse=True):
+            if trade["execType"] == "Trade" and float(trade["execQty"]) > 0:
+                positions = session.get_positions(
+                    category="linear",
+                    symbol=trade["symbol"]
+                )
+                
+                if positions["retCode"] == 0 and positions["result"]["list"]:
+                    for position in positions["result"]["list"]:
+                        if position["symbol"] == trade["symbol"] and float(position["size"]) > 0:
+                            return f"{trade['symbol'].replace('USDT', '')}/USDT"  # Spot format
+        
+        return None
+    except Exception as e:
+        print(f"Error checking trades: {e}")
+        return None
+
+def get_open_trade(symbol):
+    """Get details of open trade for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        positions = session.get_positions(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if positions["retCode"] == 0 and positions["result"]["list"]:
+            for position in positions["result"]["list"]:
+                if position["symbol"] == pybit_symbol and float(position["size"]) > 0:
+                    unrealized_pnl = float(position['unrealisedPnl'])
+                    return {
+                        'side': position['side'],
+                        'size': float(position['size']),
+                        'entry_price': float(position['avgPrice']),
+                        'unrealized_pnl': unrealized_pnl,
+                        'pnl_status': format_pnl(unrealized_pnl),
+                        'created_time': datetime.fromtimestamp(int(position['createdTime'])/1000, UTC_TZ).astimezone(LAGOS_TZ)
+                    }
+        return None
+    except Exception as e:
+        print(f"Error checking open positions: {e}")
+        return None
+
+def get_last_closed_trade():
+    """Get details of last closed trade"""
+    try:
+        trades = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if trades["retCode"] != 0:
+            print(f"Error fetching trades: {trades['retMsg']}")
+            return None
+            
+        trades = trades["result"]["list"]
+        if not trades:
+            return None
+
+        for trade in sorted(trades, key=lambda x: int(x["execTime"]), reverse=True):
+            symbol = trade["symbol"]
+            positions = session.get_positions(
+                category="linear",
+                symbol=symbol
+            )
+            
+            if positions["retCode"] != 0:
+                continue
+                
+            position_open = any(float(p["size"]) > 0 for p in positions["result"]["list"])
+            
+            if not position_open and trade["closedSize"]:
+                utc_time = datetime.fromtimestamp(int(trade["execTime"])/1000, UTC_TZ)
+                lagos_time = utc_time.astimezone(LAGOS_TZ)
+                
+                if trade['side'] == 'Sell':  # Closing long
+                    trade_type = 'Long Close'
+                    actual_side = 'Buy'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                else:  # Closing short
+                    trade_type = 'Short Close'
+                    actual_side = 'Sell'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+                
+                return {
+                    'symbol': f"{symbol.replace('USDT', '')}/USDT",  # Spot format
+                    'type': trade_type,
+                    'side': actual_side,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'pnl': pnl_percent,
+                    'pnl_status': format_pnl(pnl_percent),
+                    'closed_time': lagos_time,
+                    'utc_close_time': utc_time
+                }
+        return None
+    except Exception as e:
+        print(f"Error fetching trade history: {e}")
+        return None
+
+def analyze_trend_since_close(symbol, since_timestamp):
+    """Analyze trend changes since trade close"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None or len(df) < 2:
+            return None, "Error: Not enough market data"
+        
+        close_candle_idx = df.index.get_indexer([since_timestamp], method='nearest')[0]
+        if close_candle_idx < 1:
+            close_candle_idx = 1
+        
+        trend_at_close = detect_trend(df, close_candle_idx)
+        
+        last_trade = get_last_closed_trade()
+        if last_trade:
+            if (last_trade['side'] == "Sell" and trend_at_close == "Uptrend") or \
+               (last_trade['side'] == "Buy" and trend_at_close == "Downtrend"):
+                return None, "⚠️ COUNTER-TREND CLOSING DETECTED"
+        
+        current_trend = trend_at_close
+        first_flip = None
+        
+        for i in range(close_candle_idx + 1, len(df)):
+            new_trend = detect_trend(df, i)
+            
+            if new_trend != current_trend and new_trend in ["Uptrend", "Downtrend"]:
+                first_flip = {
+                    'time': df.index[i],
+                    'new_trend': new_trend,
+                    'price': df['close'].iloc[i],
+                    'candle_time': df.index[i].strftime('%Y-%m-%d %H:%M:%S')
+                }
+                break
+        
+        if first_flip:
+            duration = first_flip['time'] - since_timestamp
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            return first_flip, f"FIRST TREND FLIP: {first_flip['new_trend']} at {first_flip['candle_time']} ({hours}h {minutes}m after close)"
+        
+        return None, "✅ No trend flips detected since closing"
+    
+    except Exception as e:
+        print(f"Error analyzing trend: {e}")
+        return None, f"Error analyzing trend: {e}"
+
+def check_crossover(symbol):
+    """Check for crossover condition on specified symbol"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None:
+            return False
+            
+        src = df['close'].values
+        out, upper, lower = calculate_nwe(src, h, mult, repaint)
+        
+        close_series = pd.Series(src)
+        upper_series = pd.Series(upper)
+        crossover = detect_crossover(close_series, upper_series)
+        
+        return crossover.iloc[-2]  # Check most recent candle
+    except Exception as e:
+        print(f"Error checking crossover: {e}")
+        return False
+
+def cancel_all_pending_orders(symbol):
+    """Cancel all pending orders for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        response = session.cancel_all_orders(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if response["retCode"] == 0:
+            print("All pending orders canceled")
+            return True
+        else:
+            print(f"Failed to cancel orders: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error canceling orders: {e}")
+        return False
+
+def close_long_position(symbol):
+    """Close long position for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        position = get_open_trade(symbol)
+        
+        if position and position['side'] == 'Buy':
+            ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+            market_price = float(ticker["result"]["list"][0]["lastPrice"])
+            
+            response = session.place_order(
+                category="linear",
+                symbol=pybit_symbol,
+                side="Sell",
+                orderType="Market",
+                qty=str(position['size'])
+            )
+            
+            if response["retCode"] == 0:
+                msg = f"Long position closed at {market_price}. PnL: {position['pnl_status']}"
+                print(msg)
+                send_email("Long Position Closed", msg)
+                return True
+            else:
+                print(f"Failed to close long position: {response['retMsg']}")
+                return False
+        return False
+    except Exception as e:
+        print(f"Error closing long position: {e}")
+        return False
+
+def place_short_market_order(symbol, usdt_amount=70):
+    """Place short market order for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        
+        ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+        market_price = float(ticker["result"]["list"][0]["lastPrice"])
+        
+        instrument_info = session.get_instruments_info(category="linear", symbol=pybit_symbol)
+        lot_size = instrument_info["result"]["list"][0]["lotSizeFilter"]
+        qty_step = float(lot_size["qtyStep"])
+        
+        quantity = round((usdt_amount / market_price) / qty_step) * qty_step
+        
+        # Calculate stop loss and take profit prices
+        stop_loss_price = market_price * (1 + STOP_LOSS_PERCENT/100)
+        take_profit_price = market_price * (1 - TAKE_PROFIT_PERCENT/100)
+        
+        response = session.place_order(
+            category="linear",
+            symbol=pybit_symbol,
+            side="Sell",
+            orderType="Market",
+            qty=str(quantity),
+            stopLoss=str(stop_loss_price),
+            takeProfit=str(take_profit_price)
+        )
+        
+        if response["retCode"] == 0:
+            msg = f"""Short market order placed for {quantity} {symbol.split('/')[0]} at {market_price}
+Stop Loss: {stop_loss_price:.4f} ({STOP_LOSS_PERCENT}%)
+Take Profit: {take_profit_price:.4f} ({TAKE_PROFIT_PERCENT}%)"""
+            print(msg)
+            send_email("Short Position Opened", msg)
+            return True
+        else:
+            print(f"Failed to place order: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error placing short order: {e}")
+        return False
+
+def main():
+    print(f"\n🚀 Starting Crossover Strategy at {datetime.now(LAGOS_TZ).strftime('%Y-%m-%d %H:%M:%S')} Lagos Time\n")
+    
+    # 1. Check for any open trades
+    open_symbol = get_most_recent_open_trade_symbol()
+    if open_symbol:
+        print(f"🔍 Open Trade Detected on {open_symbol}:")
+        open_trade = get_open_trade(open_symbol)
+        
+        if open_trade:
+            print(f"Direction: {'SHORT' if open_trade['side'] == 'Sell' else 'LONG'}")
+            print(f"Entry Price: {open_trade['entry_price']}")
+            print(f"Size: {open_trade['size']}")
+            print(f"Unrealized PnL: {open_trade['pnl_status']}")
+            print(f"Created Time: {open_trade['created_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Handle open LONG trade (close on crossover)
+            if open_trade['side'] == 'Buy':
+                if check_crossover(open_symbol):
+                    print("\n⚠️ CROSSOVER DETECTED - Closing LONG Position")
+                    if close_long_position(open_symbol):
+                        print("✅ LONG Position Closed Successfully")
+                    else:
+                        print("❌ Failed to Close LONG Position")
+                else:
+                    print("\n✅ No Crossover - Keeping LONG Position Open")
+            
+            return
+        
+    # 2. Check last closed trade
+    last_trade = get_last_closed_trade()
+    if not last_trade:
+        print("\nℹ️ No Previous Trades Found - Standing By")
+        return
+    
+    print(f"\n🔍 Last Closed Trade:")
+    print(f"Symbol: {last_trade['symbol']}")
+    print(f"Type: {last_trade['type']}")
+    print(f"Direction: {'LONG' if last_trade['side'] == 'Buy' else 'SHORT'}")
+    print(f"Entry Price: {last_trade['entry_price']}")
+    print(f"Exit Price: {last_trade['exit_price']}")
+    print(f"Closed Time: {last_trade['closed_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"PnL: {last_trade['pnl_status']}")
+    
+    # Only act if last closed was SHORT trade
+    if last_trade['side'] == 'Sell':
+        # Analyze trend since close
+        flip_info, trend_message = analyze_trend_since_close(last_trade['symbol'], last_trade['closed_time'])
+        print(f"\n📈 Trend Analysis:")
+        print(trend_message)
+        
+        if "COUNTER-TREND" in trend_message:
+            print("🛑 Not Entering New Trade Due to Counter-Trend Close")
+        elif "FLIP" in trend_message:
+            print("🛑 Not Entering New Trade Due to Trend Flip")
+        else:
+            # Check current market data
+            df = fetch_market_data(last_trade['symbol'], timeframe, limit)
+            if df is not None:
+                current_trend = detect_trend(df, len(df)-1)
+                print(f"\n📊 Current Market Trend: {current_trend}")
+                
+                if check_crossover(last_trade['symbol']):
+                    print("\n⚠️ CROSSOVER DETECTED - Preparing to Enter SHORT")
+                    if current_trend in ("Downtrend", "Sideways"):
+                        if cancel_all_pending_orders(last_trade['symbol']):
+                            print("✅ Orders Canceled - Entering SHORT")
+                            place_short_market_order(last_trade['symbol'])
+                        else:
+                            print("❌ Failed to Cancel Pending Orders")
+                    else:
+                        print("🛑 Crossover Ignored - Market in Uptrend")
+                else:
+                    print("\n✅ No Crossover Detected - Standing By")
+    
+    print("\n✅ Strategy Execution Completed")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+##########################################################
+###################################################
+
+##########################################################
+###################################################
+
+##########################################################
+###################################################
+
+##########################################################
+###################################################
+print("""
+  ⚙️▬▬ι═══════ﺤ -═══════ι▬▬⚙️
+     C R O S S U N D E R  
+  ⚙️▬▬ι═══════ﺤ -═══════ι▬▬⚙️
+""")
+
+
+
+import ccxt
+import pandas as pd
+import numpy as np
+from pybit.unified_trading import HTTP
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+import pytz
+
+# Initialize exchanges and trading session
+exchange = ccxt.mexc({
+    'options': {
+        'defaultType': 'spot',  # Explicitly set to spot markets
+    }
+})
+session = HTTP(
+    api_key="4eQbf5STelVE40HOtB",
+    api_secret="bzo7oS1u8jxHIpkpFzy9mDLMvRrARJcXlKxt",
+    demo=True
+)
+
+# Timezone setup
+LAGOS_TZ = pytz.timezone('Africa/Lagos')
+UTC_TZ = pytz.UTC
+
+# Settings
+timeframe = '15m'
+limit = 500
+h = 8.0
+mult = 3.0
+repaint = True
+len_ema = 200
+STOP_LOSS_PERCENT = 2.5  # 2% stop loss
+TAKE_PROFIT_PERCENT = 10.0  # 10% take profit
+
+# Email settings
+SENDER_EMAIL = "dahmadu071@gmail.com"
+RECIPIENT_EMAILS = ["teejeedeeone@gmail.com"]
+EMAIL_PASSWORD = "oase wivf hvqn lyhr"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+def format_pnl(pnl):
+    """Format PnL with proper sign and profit/loss indication"""
+    if pnl > 0:
+        return f"+{pnl:.2f}% (Profit)"
+    elif pnl < 0:
+        return f"{pnl:.2f}% (Loss)"
+    return f"{pnl:.2f}% (Break-even)"
+
+def send_email(subject, body):
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = ", ".join(RECIPIENT_EMAILS)
+        
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("Email notification sent")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+def get_pybit_symbol(ccxt_symbol):
+    """Convert CCXT spot symbol to Bybit symbol format"""
+    return ccxt_symbol.replace('/', '')  # Turns 'BTC/USDT' into 'BTCUSDT'
+
+def gauss(x, h):
+    """Gaussian window function"""
+    return np.exp(-(x ** 2) / (h ** 2 * 2))
+
+def calculate_nwe(src, h, mult, repaint):
+    """Calculate Nadaraya-Watson Envelope"""
+    n = len(src)
+    out = np.zeros(n)
+    mae = np.zeros(n)
+    upper = np.zeros(n)
+    lower = np.zeros(n)
+    
+    if not repaint:
+        coefs = np.array([gauss(i, h) for i in range(n)])
+        den = np.sum(coefs)
+        
+        for i in range(n):
+            out[i] = np.sum(src * coefs) / den
+        
+        mae = pd.Series(np.abs(src - out)).rolling(499).mean().values * mult
+        upper = out + mae
+        lower = out - mae
+    else:
+        nwe = []
+        sae = 0.0
+        
+        for i in range(n):
+            sum_val = 0.0
+            sumw = 0.0
+            for j in range(n):
+                w = gauss(i - j, h)
+                sum_val += src[j] * w
+                sumw += w
+            y2 = sum_val / sumw
+            nwe.append(y2)
+            sae += np.abs(src[i] - y2)
+        
+        sae = (sae / n) * mult
+        
+        for i in range(n):
+            upper[i] = nwe[i] + sae
+            lower[i] = nwe[i] - sae
+            out[i] = nwe[i]
+    
+    return out, upper, lower
+
+def detect_crossunder(close, lower):
+    """Detect crossunder condition"""
+    return (close.shift(1) > lower.shift(1)) & (close < lower)
+
+def fetch_market_data(symbol, timeframe, limit=500):
+    """Fetch OHLCV data with proper timezone handling"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(LAGOS_TZ)
+        df.set_index('timestamp', inplace=True)
+        df['EMA'] = df['close'].ewm(span=len_ema, adjust=False).mean()
+        return df
+    except Exception as e:
+        print(f"Error fetching market data: {e}")
+        return None
+
+def detect_trend(df, candle_index):
+    """Determine trend for a specific candle"""
+    if candle_index < 1 or candle_index >= len(df):
+        return "Sideways"
+    
+    ema_current = df['EMA'].iloc[candle_index]
+    ema_prev = df['EMA'].iloc[candle_index-1]
+    price = df['close'].iloc[candle_index]
+    
+    if ema_current > ema_prev and price > ema_current:
+        return "Uptrend"
+    elif ema_current < ema_prev and price < ema_current:
+        return "Downtrend"
+    return "Sideways"
+
+def get_most_recent_open_trade_symbol():
+    """Get symbol of most recent open trade"""
+    try:
+        executions = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if executions["retCode"] != 0:
+            print(f"Error fetching executions: {executions['retMsg']}")
+            return None
+            
+        if not executions["result"]["list"]:
+            return None
+            
+        for trade in sorted(executions["result"]["list"], 
+                          key=lambda x: int(x["execTime"]), 
+                          reverse=True):
+            if trade["execType"] == "Trade" and float(trade["execQty"]) > 0:
+                positions = session.get_positions(
+                    category="linear",
+                    symbol=trade["symbol"]
+                )
+                
+                if positions["retCode"] == 0 and positions["result"]["list"]:
+                    for position in positions["result"]["list"]:
+                        if position["symbol"] == trade["symbol"] and float(position["size"]) > 0:
+                            return f"{trade['symbol'].replace('USDT', '')}/USDT"  # Spot format
+        
+        return None
+    except Exception as e:
+        print(f"Error checking trades: {e}")
+        return None
+
+def get_open_trade(symbol):
+    """Get details of open trade for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        positions = session.get_positions(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if positions["retCode"] == 0 and positions["result"]["list"]:
+            for position in positions["result"]["list"]:
+                if position["symbol"] == pybit_symbol and float(position["size"]) > 0:
+                    unrealized_pnl = float(position['unrealisedPnl'])
+                    return {
+                        'side': position['side'],
+                        'size': float(position['size']),
+                        'entry_price': float(position['avgPrice']),
+                        'unrealized_pnl': unrealized_pnl,
+                        'pnl_status': format_pnl(unrealized_pnl),
+                        'created_time': datetime.fromtimestamp(int(position['createdTime'])/1000, UTC_TZ).astimezone(LAGOS_TZ)
+                    }
+        return None
+    except Exception as e:
+        print(f"Error checking open positions: {e}")
+        return None
+
+def get_last_closed_trade():
+    """Get details of last closed trade"""
+    try:
+        trades = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if trades["retCode"] != 0:
+            print(f"Error fetching trades: {trades['retMsg']}")
+            return None
+            
+        trades = trades["result"]["list"]
+        if not trades:
+            return None
+
+        for trade in sorted(trades, key=lambda x: int(x["execTime"]), reverse=True):
+            symbol = trade["symbol"]
+            positions = session.get_positions(
+                category="linear",
+                symbol=symbol
+            )
+            
+            if positions["retCode"] != 0:
+                continue
+                
+            position_open = any(float(p["size"]) > 0 for p in positions["result"]["list"])
+            
+            if not position_open and trade["closedSize"]:
+                utc_time = datetime.fromtimestamp(int(trade["execTime"])/1000, UTC_TZ)
+                lagos_time = utc_time.astimezone(LAGOS_TZ)
+                
+                if trade['side'] == 'Sell':  # Closing long
+                    trade_type = 'Long Close'
+                    actual_side = 'Buy'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                else:  # Closing short
+                    trade_type = 'Short Close'
+                    actual_side = 'Sell'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+                
+                return {
+                    'symbol': f"{symbol.replace('USDT', '')}/USDT",  # Spot format
+                    'type': trade_type,
+                    'side': actual_side,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'pnl': pnl_percent,
+                    'pnl_status': format_pnl(pnl_percent),
+                    'closed_time': lagos_time,
+                    'utc_close_time': utc_time
+                }
+        return None
+    except Exception as e:
+        print(f"Error fetching trade history: {e}")
+        return None
+
+def analyze_trend_since_close(symbol, since_timestamp):
+    """Analyze trend changes since trade close (matches your reference script)"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None or len(df) < 2:
+            return None, "Error: Not enough market data"
+        
+        # Find the candle where trade was closed
+        close_candle_idx = df.index.get_indexer([since_timestamp], method='nearest')[0]
+        if close_candle_idx < 1:
+            close_candle_idx = 1
+        
+        # Get trend at close time
+        trend_at_close = detect_trend(df, close_candle_idx)
+        
+        # Check for counter-trend closing
+        last_trade = get_last_closed_trade()
+        if last_trade:
+            if (last_trade['side'] == "Sell" and trend_at_close == "Uptrend") or \
+               (last_trade['side'] == "Buy" and trend_at_close == "Downtrend"):
+                return None, "⚠️ COUNTER-TREND CLOSING DETECTED"
+        
+        # Analyze trend changes
+        current_trend = trend_at_close
+        first_flip = None
+        
+        for i in range(close_candle_idx + 1, len(df)):
+            new_trend = detect_trend(df, i)
+            
+            if new_trend != current_trend and new_trend in ["Uptrend", "Downtrend"]:
+                first_flip = {
+                    'time': df.index[i],
+                    'new_trend': new_trend,
+                    'price': df['close'].iloc[i],
+                    'candle_time': df.index[i].strftime('%Y-%m-%d %H:%M:%S')
+                }
+                break
+        
+        if first_flip:
+            duration = first_flip['time'] - since_timestamp
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            return first_flip, f"FIRST TREND FLIP: {first_flip['new_trend']} at {first_flip['candle_time']} ({hours}h {minutes}m after close)"
+        
+        return None, "✅ No trend flips detected since closing"
+    
+    except Exception as e:
+        print(f"Error analyzing trend: {e}")
+        return None, f"Error analyzing trend: {e}"
+
+def check_crossunder(symbol):
+    """Check for crossunder condition on specified symbol"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        src = df['close'].values
+        out, upper, lower = calculate_nwe(src, h, mult, repaint)
+        
+        close_series = pd.Series(src)
+        lower_series = pd.Series(lower)
+        crossunder = detect_crossunder(close_series, lower_series)
+        
+        return crossunder.iloc[-2]
+    except Exception as e:
+        print(f"Error checking crossunder: {e}")
+        return False
+
+def cancel_all_pending_orders(symbol):
+    """Cancel all pending orders for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        response = session.cancel_all_orders(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if response["retCode"] == 0:
+            print("All pending orders canceled")
+            return True
+        else:
+            print(f"Failed to cancel orders: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error canceling orders: {e}")
+        return False
+
+def place_long_market_order(symbol, usdt_amount=70):
+    """Place long market order for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        
+        ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+        market_price = float(ticker["result"]["list"][0]["lastPrice"])
+        
+        instrument_info = session.get_instruments_info(category="linear", symbol=pybit_symbol)
+        lot_size = instrument_info["result"]["list"][0]["lotSizeFilter"]
+        qty_step = float(lot_size["qtyStep"])
+        
+        quantity = round((usdt_amount / market_price) / qty_step) * qty_step
+        
+        # Calculate stop loss and take profit prices
+        stop_loss_price = market_price * (1 - STOP_LOSS_PERCENT/100)
+        take_profit_price = market_price * (1 + TAKE_PROFIT_PERCENT/100)
+        
+        response = session.place_order(
+            category="linear",
+            symbol=pybit_symbol,
+            side="Buy",
+            orderType="Market",
+            qty=str(quantity),
+            stopLoss=str(stop_loss_price),
+            takeProfit=str(take_profit_price)
+        )
+        
+        if response["retCode"] == 0:
+            msg = f"""Long market order placed for {quantity} {symbol.split('/')[0]} at {market_price}
+Stop Loss: {stop_loss_price:.4f} ({STOP_LOSS_PERCENT}%)
+Take Profit: {take_profit_price:.4f} ({TAKE_PROFIT_PERCENT}%)"""
+            print(msg)
+            send_email("Long Position Opened", msg)
+            return True
+        else:
+            print(f"Failed to place order: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error placing long order: {e}")
+        return False
+
+def close_short_position(symbol):
+    """Close short position for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        position = get_open_trade(symbol)
+        
+        if position and position['side'] == 'Sell':
+            ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+            market_price = float(ticker["result"]["list"][0]["lastPrice"])
+            
+            response = session.place_order(
+                category="linear",
+                symbol=pybit_symbol,
+                side="Buy",
+                orderType="Market",
+                qty=str(position['size'])
+            )
+            
+            if response["retCode"] == 0:
+                msg = f"Short position closed at {market_price}. PnL: {position['pnl_status']}"
+                print(msg)
+                send_email("Short Position Closed", msg)
+                return True
+            else:
+                print(f"Failed to close short position: {response['retMsg']}")
+                return False
+        return False
+    except Exception as e:
+        print(f"Error closing short position: {e}")
+        return False
+
+def main():
+    print(f"\n🚀 Starting Crossunder Strategy at {datetime.now(LAGOS_TZ).strftime('%Y-%m-%d %H:%M:%S')} Lagos Time\n")
+    
+    # 1. Check for any open trades
+    open_symbol = get_most_recent_open_trade_symbol()
+    if open_symbol:
+        print(f"🔍 Open Trade Detected:")
+        open_trade = get_open_trade(open_symbol)
+        
+        if open_trade:
+            print(f"Symbol: {open_symbol}")
+            print(f"Direction: {'SHORT' if open_trade['side'] == 'Sell' else 'LONG'}")
+            print(f"Entry Price: {open_trade['entry_price']}")
+            print(f"Size: {open_trade['size']}")
+            print(f"Unrealized PnL: {open_trade['pnl_status']}")
+            print(f"Created Time: {open_trade['created_time'].strftime('%Y-%m-%d %H:%M:%S')} Lagos Time")
+            print("\nOpen LONG trade - doing nothing as per strategy")
+            
+            # Handle open SHORT trade
+            if open_trade['side'] == 'Sell':
+                if check_crossunder(open_symbol):
+                    print("\n⚠️ CROSSUNDER DETECTED - Closing SHORT Position")
+                    if close_short_position(open_symbol):
+                        print("✅ SHORT Position Closed Successfully")
+                    else:
+                        print("❌ Failed to Close SHORT Position")
+                else:
+                    print("\n✅ No Crossunder - Keeping SHORT Position Open")
+            
+            #print("\n🛑 Strategy Blocked: Existing Open Position Detected")
+            return
+        
+        else:
+            print("\nℹ️ No Valid Open Positions Found")
+    
+    # 2. Check last closed trade
+    last_trade = get_last_closed_trade()
+    if not last_trade:
+        print("\nℹ️ No Previous Trades Found - Standing By")
+        return
+    
+    print(f"\n🔍 Last Closed Trade:")
+    print(f"Symbol: {last_trade['symbol']}")
+    print(f"Type: {last_trade['type']}")
+    print(f"Direction: {'LONG' if last_trade['side'] == 'Buy' else 'SHORT'}")
+    print(f"Entry Price: {last_trade['entry_price']}")
+    print(f"Exit Price: {last_trade['exit_price']}")
+    print(f"Closed Time: {last_trade['closed_time'].strftime('%Y-%m-%d %H:%M:%S')} Lagos Time")
+    print(f"PnL: {last_trade['pnl_status']}")
+    
+    # Only act if last closed was LONG
+    if last_trade['side'] == 'Buy':
+        # Analyze trend since close
+        flip_info, trend_message = analyze_trend_since_close(last_trade['symbol'], last_trade['closed_time'])
+        print(f"\n📈 Trend Analysis:")
+        print(trend_message)
+        
+        if "COUNTER-TREND" in trend_message:
+            print("🛑 Not Entering New Trade Due to Counter-Trend Close")
+        elif "FLIP" in trend_message:
+            print("🛑 Not Entering New Trade Due to Trend Flip")
+        else:
+            # Check current market data
+            df = fetch_market_data(last_trade['symbol'], timeframe, limit)
+            if df is not None:
+                current_trend = detect_trend(df, len(df)-1)
+                print(f"\n📊 Current Market Trend: {current_trend}")
+                
+                if check_crossunder(last_trade['symbol']):
+                    print("\n⚠️ CROSSUNDER DETECTED - Preparing to Enter LONG")
+                    if current_trend in ("Uptrend", "Sideways"):
+                        if cancel_all_pending_orders(last_trade['symbol']):
+                            print("✅ Orders Canceled - Entering LONG")
+                            place_long_market_order(last_trade['symbol'])
+                        else:
+                            print("❌ Failed to Cancel Pending Orders")
+                    else:
+                        print("🛑 Crossunder Ignored - Market in Downtrend")
+                else:
+                    print("\n✅ No Crossunder Detected - Standing By")
+    
+    print("\n✅ Strategy Execution Completed")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
+print("""
+  _________________________________
+ /                                 \\
+|   C R O S S O V E R  SECRETS   |
+ \\_________________________________/
+        \\                   /
+         \\                 /
+          `\\_____________/'
+""")
+
+
+
+import ccxt
+import pandas as pd
+import numpy as np
+from pybit.unified_trading import HTTP
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+import pytz
+
+# Initialize exchanges and trading session
+exchange = ccxt.mexc({
+    'options': {
+        'defaultType': 'spot',  # Explicitly set to spot markets
+    }
+})
+session = HTTP(
+    api_key="4eQbf5STelVE40HOtB",
+    api_secret="bzo7oS1u8jxHIpkpFzy9mDLMvRrARJcXlKxt",
+    demo=True
+)
+
+# Timezone setup
+LAGOS_TZ = pytz.timezone('Africa/Lagos')
+UTC_TZ = pytz.UTC
+
+# Settings
+timeframe = '15m'
+limit = 500
+h = 8.0
+mult = 3.0
+repaint = True
+len_ema = 200
+STOP_LOSS_PERCENT = 2.5  # 2% stop loss
+TAKE_PROFIT_PERCENT = 10.0  # 10% take profit
+
+# Email settings
+SENDER_EMAIL = "dahmadu071@gmail.com"
+RECIPIENT_EMAILS = ["teejeedeeone@gmail.com"]
+EMAIL_PASSWORD = "oase wivf hvqn lyhr"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+def format_pnl(pnl):
+    """Format PnL with proper sign and profit/loss indication"""
+    if pnl > 0:
+        return f"+{pnl:.2f}% (Profit)"
+    elif pnl < 0:
+        return f"{pnl:.2f}% (Loss)"
+    return f"{pnl:.2f}% (Break-even)"
+
+def send_email(subject, body):
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = ", ".join(RECIPIENT_EMAILS)
+        
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("Email notification sent")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+def get_pybit_symbol(ccxt_symbol):
+    """Convert CCXT spot symbol to Bybit symbol format"""
+    return ccxt_symbol.replace('/', '')  # Turns 'BTC/USDT' into 'BTCUSDT'
+
+def gauss(x, h):
+    """Gaussian window function"""
+    return np.exp(-(x ** 2) / (h ** 2 * 2))
+
+def calculate_nwe(src, h, mult, repaint):
+    """Calculate Nadaraya-Watson Envelope"""
+    n = len(src)
+    out = np.zeros(n)
+    mae = np.zeros(n)
+    upper = np.zeros(n)
+    lower = np.zeros(n)
+    
+    if not repaint:
+        coefs = np.array([gauss(i, h) for i in range(n)])
+        den = np.sum(coefs)
+        
+        for i in range(n):
+            out[i] = np.sum(src * coefs) / den
+        
+        mae = pd.Series(np.abs(src - out)).rolling(499).mean().values * mult
+        upper = out + mae
+        lower = out - mae
+    else:
+        nwe = []
+        sae = 0.0
+        
+        for i in range(n):
+            sum_val = 0.0
+            sumw = 0.0
+            for j in range(n):
+                w = gauss(i - j, h)
+                sum_val += src[j] * w
+                sumw += w
+            y2 = sum_val / sumw
+            nwe.append(y2)
+            sae += np.abs(src[i] - y2)
+        
+        sae = (sae / n) * mult
+        
+        for i in range(n):
+            upper[i] = nwe[i] + sae
+            lower[i] = nwe[i] - sae
+            out[i] = nwe[i]
+    
+    return out, upper, lower
+
+def detect_crossover(close, upper):
+    """Detect if price has crossed above the upper envelope"""
+    return (close.shift(1) < upper.shift(1)) & (close > upper)
+
+def fetch_market_data(symbol, timeframe, limit=500):
+    """Fetch OHLCV data with proper timezone handling"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(LAGOS_TZ)
+        df.set_index('timestamp', inplace=True)
+        df['EMA'] = df['close'].ewm(span=len_ema, adjust=False).mean()
+        return df
+    except Exception as e:
+        print(f"Error fetching market data: {e}")
+        return None
+
+def detect_trend(df, candle_index):
+    """Determine trend for a specific candle"""
+    if candle_index < 1 or candle_index >= len(df):
+        return "Sideways"
+    
+    ema_current = df['EMA'].iloc[candle_index]
+    ema_prev = df['EMA'].iloc[candle_index-1]
+    price = df['close'].iloc[candle_index]
+    
+    if ema_current > ema_prev and price > ema_current:
+        return "Uptrend"
+    elif ema_current < ema_prev and price < ema_current:
+        return "Downtrend"
+    return "Sideways"
+
+def get_most_recent_open_trade_symbol():
+    """Get symbol of most recent open trade"""
+    try:
+        executions = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if executions["retCode"] != 0:
+            print(f"Error fetching executions: {executions['retMsg']}")
+            return None
+            
+        if not executions["result"]["list"]:
+            return None
+            
+        for trade in sorted(executions["result"]["list"], 
+                          key=lambda x: int(x["execTime"]), 
+                          reverse=True):
+            if trade["execType"] == "Trade" and float(trade["execQty"]) > 0:
+                positions = session.get_positions(
+                    category="linear",
+                    symbol=trade["symbol"]
+                )
+                
+                if positions["retCode"] == 0 and positions["result"]["list"]:
+                    for position in positions["result"]["list"]:
+                        if position["symbol"] == trade["symbol"] and float(position["size"]) > 0:
+                            return f"{trade['symbol'].replace('USDT', '')}/USDT"  # Spot format
+        
+        return None
+    except Exception as e:
+        print(f"Error checking trades: {e}")
+        return None
+
+def get_open_trade(symbol):
+    """Get details of open trade for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        positions = session.get_positions(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if positions["retCode"] == 0 and positions["result"]["list"]:
+            for position in positions["result"]["list"]:
+                if position["symbol"] == pybit_symbol and float(position["size"]) > 0:
+                    unrealized_pnl = float(position['unrealisedPnl'])
+                    return {
+                        'side': position['side'],
+                        'size': float(position['size']),
+                        'entry_price': float(position['avgPrice']),
+                        'unrealized_pnl': unrealized_pnl,
+                        'pnl_status': format_pnl(unrealized_pnl),
+                        'created_time': datetime.fromtimestamp(int(position['createdTime'])/1000, UTC_TZ).astimezone(LAGOS_TZ)
+                    }
+        return None
+    except Exception as e:
+        print(f"Error checking open positions: {e}")
+        return None
+
+def get_last_closed_trade():
+    """Get details of last closed trade"""
+    try:
+        trades = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if trades["retCode"] != 0:
+            print(f"Error fetching trades: {trades['retMsg']}")
+            return None
+            
+        trades = trades["result"]["list"]
+        if not trades:
+            return None
+
+        for trade in sorted(trades, key=lambda x: int(x["execTime"]), reverse=True):
+            symbol = trade["symbol"]
+            positions = session.get_positions(
+                category="linear",
+                symbol=symbol
+            )
+            
+            if positions["retCode"] != 0:
+                continue
+                
+            position_open = any(float(p["size"]) > 0 for p in positions["result"]["list"])
+            
+            if not position_open and trade["closedSize"]:
+                utc_time = datetime.fromtimestamp(int(trade["execTime"])/1000, UTC_TZ)
+                lagos_time = utc_time.astimezone(LAGOS_TZ)
+                
+                if trade['side'] == 'Sell':  # Closing long
+                    trade_type = 'Long Close'
+                    actual_side = 'Buy'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                else:  # Closing short
+                    trade_type = 'Short Close'
+                    actual_side = 'Sell'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+                
+                return {
+                    'symbol': f"{symbol.replace('USDT', '')}/USDT",  # Spot format
+                    'type': trade_type,
+                    'side': actual_side,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'pnl': pnl_percent,
+                    'pnl_status': format_pnl(pnl_percent),
+                    'closed_time': lagos_time,
+                    'utc_close_time': utc_time
+                }
+        return None
+    except Exception as e:
+        print(f"Error fetching trade history: {e}")
+        return None
+
+def analyze_trend_since_close(symbol, since_timestamp):
+    """Analyze trend changes since trade close"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None or len(df) < 2:
+            return None, "Error: Not enough market data"
+        
+        close_candle_idx = df.index.get_indexer([since_timestamp], method='nearest')[0]
+        if close_candle_idx < 1:
+            close_candle_idx = 1
+        
+        trend_at_close = detect_trend(df, close_candle_idx)
+        
+        last_trade = get_last_closed_trade()
+        if last_trade:
+            if (last_trade['side'] == "Sell" and trend_at_close == "Uptrend") or \
+               (last_trade['side'] == "Buy" and trend_at_close == "Downtrend"):
+                return None, "⚠️ COUNTER-TREND CLOSING DETECTED"
+        
+        current_trend = trend_at_close
+        first_flip = None
+        
+        for i in range(close_candle_idx + 1, len(df)):
+            new_trend = detect_trend(df, i)
+            
+            if new_trend != current_trend and new_trend in ["Uptrend", "Downtrend"]:
+                first_flip = {
+                    'time': df.index[i],
+                    'new_trend': new_trend,
+                    'price': df['close'].iloc[i],
+                    'candle_time': df.index[i].strftime('%Y-%m-%d %H:%M:%S')
+                }
+                break
+        
+        if first_flip:
+            duration = first_flip['time'] - since_timestamp
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            return first_flip, f"FIRST TREND FLIP: {first_flip['new_trend']} at {first_flip['candle_time']} ({hours}h {minutes}m after close)"
+        
+        return None, "✅ No trend flips detected since closing"
+    
+    except Exception as e:
+        print(f"Error analyzing trend: {e}")
+        return None, f"Error analyzing trend: {e}"
+
+def check_crossover(symbol):
+    """Check for crossover condition on specified symbol"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None:
+            return False
+            
+        src = df['close'].values
+        out, upper, lower = calculate_nwe(src, h, mult, repaint)
+        
+        close_series = pd.Series(src)
+        upper_series = pd.Series(upper)
+        crossover = detect_crossover(close_series, upper_series)
+        
+        return crossover.iloc[-2]  # Check most recent candle
+    except Exception as e:
+        print(f"Error checking crossover: {e}")
+        return False
+
+def cancel_all_pending_orders(symbol):
+    """Cancel all pending orders for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        response = session.cancel_all_orders(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if response["retCode"] == 0:
+            print("All pending orders canceled")
+            return True
+        else:
+            print(f"Failed to cancel orders: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error canceling orders: {e}")
+        return False
+
+def close_long_position(symbol):
+    """Close long position for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        position = get_open_trade(symbol)
+        
+        if position and position['side'] == 'Buy':
+            ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+            market_price = float(ticker["result"]["list"][0]["lastPrice"])
+            
+            response = session.place_order(
+                category="linear",
+                symbol=pybit_symbol,
+                side="Sell",
+                orderType="Market",
+                qty=str(position['size'])
+            )
+            
+            if response["retCode"] == 0:
+                msg = f"Long position closed at {market_price}. PnL: {position['pnl_status']}"
+                print(msg)
+                send_email("Long Position Closed", msg)
+                return True
+            else:
+                print(f"Failed to close long position: {response['retMsg']}")
+                return False
+        return False
+    except Exception as e:
+        print(f"Error closing long position: {e}")
+        return False
+
+def place_short_market_order(symbol, usdt_amount=70):
+    """Place short market order for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        
+        ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+        market_price = float(ticker["result"]["list"][0]["lastPrice"])
+        
+        instrument_info = session.get_instruments_info(category="linear", symbol=pybit_symbol)
+        lot_size = instrument_info["result"]["list"][0]["lotSizeFilter"]
+        qty_step = float(lot_size["qtyStep"])
+        
+        quantity = round((usdt_amount / market_price) / qty_step) * qty_step
+        
+        # Calculate stop loss and take profit prices
+        stop_loss_price = market_price * (1 + STOP_LOSS_PERCENT/100)
+        take_profit_price = market_price * (1 - TAKE_PROFIT_PERCENT/100)
+        
+        response = session.place_order(
+            category="linear",
+            symbol=pybit_symbol,
+            side="Sell",
+            orderType="Market",
+            qty=str(quantity),
+            stopLoss=str(stop_loss_price),
+            takeProfit=str(take_profit_price)
+        )
+        
+        if response["retCode"] == 0:
+            msg = f"""Short market order placed for {quantity} {symbol.split('/')[0]} at {market_price}
+Stop Loss: {stop_loss_price:.4f} ({STOP_LOSS_PERCENT}%)
+Take Profit: {take_profit_price:.4f} ({TAKE_PROFIT_PERCENT}%)"""
+            print(msg)
+            send_email("Short Position Opened", msg)
+            return True
+        else:
+            print(f"Failed to place order: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error placing short order: {e}")
+        return False
+
+def main():
+    print(f"\n🚀 Starting Crossover Strategy at {datetime.now(LAGOS_TZ).strftime('%Y-%m-%d %H:%M:%S')} Lagos Time\n")
+    
+    # 1. Check for any open trades
+    open_symbol = get_most_recent_open_trade_symbol()
+    if open_symbol:
+        print(f"🔍 Open Trade Detected on {open_symbol}:")
+        open_trade = get_open_trade(open_symbol)
+        
+        if open_trade:
+            print(f"Direction: {'SHORT' if open_trade['side'] == 'Sell' else 'LONG'}")
+            print(f"Entry Price: {open_trade['entry_price']}")
+            print(f"Size: {open_trade['size']}")
+            print(f"Unrealized PnL: {open_trade['pnl_status']}")
+            print(f"Created Time: {open_trade['created_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Handle open LONG trade (close on crossover)
+            if open_trade['side'] == 'Buy':
+                if check_crossover(open_symbol):
+                    print("\n⚠️ CROSSOVER DETECTED - Closing LONG Position")
+                    if close_long_position(open_symbol):
+                        print("✅ LONG Position Closed Successfully")
+                    else:
+                        print("❌ Failed to Close LONG Position")
+                else:
+                    print("\n✅ No Crossover - Keeping LONG Position Open")
+            
+            return
+        
+    # 2. Check last closed trade
+    last_trade = get_last_closed_trade()
+    if not last_trade:
+        print("\nℹ️ No Previous Trades Found - Standing By")
+        return
+    
+    print(f"\n🔍 Last Closed Trade:")
+    print(f"Symbol: {last_trade['symbol']}")
+    print(f"Type: {last_trade['type']}")
+    print(f"Direction: {'LONG' if last_trade['side'] == 'Buy' else 'SHORT'}")
+    print(f"Entry Price: {last_trade['entry_price']}")
+    print(f"Exit Price: {last_trade['exit_price']}")
+    print(f"Closed Time: {last_trade['closed_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"PnL: {last_trade['pnl_status']}")
+    
+    # Only act if last closed was SHORT trade
+    if last_trade['side'] == 'Sell':
+        # Analyze trend since close
+        flip_info, trend_message = analyze_trend_since_close(last_trade['symbol'], last_trade['closed_time'])
+        print(f"\n📈 Trend Analysis:")
+        print(trend_message)
+        
+        if "COUNTER-TREND" in trend_message:
+            print("🛑 Not Entering New Trade Due to Counter-Trend Close")
+        elif "FLIP" in trend_message:
+            print("🛑 Not Entering New Trade Due to Trend Flip")
+        else:
+            # Check current market data
+            df = fetch_market_data(last_trade['symbol'], timeframe, limit)
+            if df is not None:
+                current_trend = detect_trend(df, len(df)-1)
+                print(f"\n📊 Current Market Trend: {current_trend}")
+                
+                if check_crossover(last_trade['symbol']):
+                    print("\n⚠️ CROSSOVER DETECTED - Preparing to Enter SHORT")
+                    if current_trend in ("Downtrend", "Sideways"):
+                        if cancel_all_pending_orders(last_trade['symbol']):
+                            print("✅ Orders Canceled - Entering SHORT")
+                            place_short_market_order(last_trade['symbol'])
+                        else:
+                            print("❌ Failed to Cancel Pending Orders")
+                    else:
+                        print("🛑 Crossover Ignored - Market in Uptrend")
+                else:
+                    print("\n✅ No Crossover Detected - Standing By")
+    
+    print("\n✅ Strategy Execution Completed")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+############################################
+######################################
+#############################
+##############################
+############################
+######################
+###########
+#####
+###
+##
+
+print("""
+  ⚙️▬▬ι═══════ﺤ -═══════ι▬▬⚙️
+     C R O S S U N D E R  
+  ⚙️▬▬ι═══════ﺤ -═══════ι▬▬⚙️
+""")
+
+
+
+import ccxt
+import pandas as pd
+import numpy as np
+from pybit.unified_trading import HTTP
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+import pytz
+
+# Initialize exchanges and trading session
+exchange = ccxt.gate({
+    'options': {
+        'defaultType': 'spot',  # Explicitly set to spot markets
+    }
+})
+session = HTTP(
+    api_key="4eQbf5STelVE40HOtB",
+    api_secret="bzo7oS1u8jxHIpkpFzy9mDLMvRrARJcXlKxt",
+    demo=True
+)
+
+# Timezone setup
+LAGOS_TZ = pytz.timezone('Africa/Lagos')
+UTC_TZ = pytz.UTC
+
+# Settings
+timeframe = '15m'
+limit = 500
+h = 8.0
+mult = 3.0
+repaint = True
+len_ema = 200
+STOP_LOSS_PERCENT = 2.5  # 2% stop loss
+TAKE_PROFIT_PERCENT = 10.0  # 10% take profit
+
+# Email settings
+SENDER_EMAIL = "dahmadu071@gmail.com"
+RECIPIENT_EMAILS = ["teejeedeeone@gmail.com"]
+EMAIL_PASSWORD = "oase wivf hvqn lyhr"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+def format_pnl(pnl):
+    """Format PnL with proper sign and profit/loss indication"""
+    if pnl > 0:
+        return f"+{pnl:.2f}% (Profit)"
+    elif pnl < 0:
+        return f"{pnl:.2f}% (Loss)"
+    return f"{pnl:.2f}% (Break-even)"
+
+def send_email(subject, body):
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = ", ".join(RECIPIENT_EMAILS)
+        
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("Email notification sent")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+def get_pybit_symbol(ccxt_symbol):
+    """Convert CCXT spot symbol to Bybit symbol format"""
+    return ccxt_symbol.replace('/', '')  # Turns 'BTC/USDT' into 'BTCUSDT'
+
+def gauss(x, h):
+    """Gaussian window function"""
+    return np.exp(-(x ** 2) / (h ** 2 * 2))
+
+def calculate_nwe(src, h, mult, repaint):
+    """Calculate Nadaraya-Watson Envelope"""
+    n = len(src)
+    out = np.zeros(n)
+    mae = np.zeros(n)
+    upper = np.zeros(n)
+    lower = np.zeros(n)
+    
+    if not repaint:
+        coefs = np.array([gauss(i, h) for i in range(n)])
+        den = np.sum(coefs)
+        
+        for i in range(n):
+            out[i] = np.sum(src * coefs) / den
+        
+        mae = pd.Series(np.abs(src - out)).rolling(499).mean().values * mult
+        upper = out + mae
+        lower = out - mae
+    else:
+        nwe = []
+        sae = 0.0
+        
+        for i in range(n):
+            sum_val = 0.0
+            sumw = 0.0
+            for j in range(n):
+                w = gauss(i - j, h)
+                sum_val += src[j] * w
+                sumw += w
+            y2 = sum_val / sumw
+            nwe.append(y2)
+            sae += np.abs(src[i] - y2)
+        
+        sae = (sae / n) * mult
+        
+        for i in range(n):
+            upper[i] = nwe[i] + sae
+            lower[i] = nwe[i] - sae
+            out[i] = nwe[i]
+    
+    return out, upper, lower
+
+def detect_crossunder(close, lower):
+    """Detect crossunder condition"""
+    return (close.shift(1) > lower.shift(1)) & (close < lower)
+
+def fetch_market_data(symbol, timeframe, limit=500):
+    """Fetch OHLCV data with proper timezone handling"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(LAGOS_TZ)
+        df.set_index('timestamp', inplace=True)
+        df['EMA'] = df['close'].ewm(span=len_ema, adjust=False).mean()
+        return df
+    except Exception as e:
+        print(f"Error fetching market data: {e}")
+        return None
+
+def detect_trend(df, candle_index):
+    """Determine trend for a specific candle"""
+    if candle_index < 1 or candle_index >= len(df):
+        return "Sideways"
+    
+    ema_current = df['EMA'].iloc[candle_index]
+    ema_prev = df['EMA'].iloc[candle_index-1]
+    price = df['close'].iloc[candle_index]
+    
+    if ema_current > ema_prev and price > ema_current:
+        return "Uptrend"
+    elif ema_current < ema_prev and price < ema_current:
+        return "Downtrend"
+    return "Sideways"
+
+def get_most_recent_open_trade_symbol():
+    """Get symbol of most recent open trade"""
+    try:
+        executions = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if executions["retCode"] != 0:
+            print(f"Error fetching executions: {executions['retMsg']}")
+            return None
+            
+        if not executions["result"]["list"]:
+            return None
+            
+        for trade in sorted(executions["result"]["list"], 
+                          key=lambda x: int(x["execTime"]), 
+                          reverse=True):
+            if trade["execType"] == "Trade" and float(trade["execQty"]) > 0:
+                positions = session.get_positions(
+                    category="linear",
+                    symbol=trade["symbol"]
+                )
+                
+                if positions["retCode"] == 0 and positions["result"]["list"]:
+                    for position in positions["result"]["list"]:
+                        if position["symbol"] == trade["symbol"] and float(position["size"]) > 0:
+                            return f"{trade['symbol'].replace('USDT', '')}/USDT"  # Spot format
+        
+        return None
+    except Exception as e:
+        print(f"Error checking trades: {e}")
+        return None
+
+def get_open_trade(symbol):
+    """Get details of open trade for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        positions = session.get_positions(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if positions["retCode"] == 0 and positions["result"]["list"]:
+            for position in positions["result"]["list"]:
+                if position["symbol"] == pybit_symbol and float(position["size"]) > 0:
+                    unrealized_pnl = float(position['unrealisedPnl'])
+                    return {
+                        'side': position['side'],
+                        'size': float(position['size']),
+                        'entry_price': float(position['avgPrice']),
+                        'unrealized_pnl': unrealized_pnl,
+                        'pnl_status': format_pnl(unrealized_pnl),
+                        'created_time': datetime.fromtimestamp(int(position['createdTime'])/1000, UTC_TZ).astimezone(LAGOS_TZ)
+                    }
+        return None
+    except Exception as e:
+        print(f"Error checking open positions: {e}")
+        return None
+
+def get_last_closed_trade():
+    """Get details of last closed trade"""
+    try:
+        trades = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if trades["retCode"] != 0:
+            print(f"Error fetching trades: {trades['retMsg']}")
+            return None
+            
+        trades = trades["result"]["list"]
+        if not trades:
+            return None
+
+        for trade in sorted(trades, key=lambda x: int(x["execTime"]), reverse=True):
+            symbol = trade["symbol"]
+            positions = session.get_positions(
+                category="linear",
+                symbol=symbol
+            )
+            
+            if positions["retCode"] != 0:
+                continue
+                
+            position_open = any(float(p["size"]) > 0 for p in positions["result"]["list"])
+            
+            if not position_open and trade["closedSize"]:
+                utc_time = datetime.fromtimestamp(int(trade["execTime"])/1000, UTC_TZ)
+                lagos_time = utc_time.astimezone(LAGOS_TZ)
+                
+                if trade['side'] == 'Sell':  # Closing long
+                    trade_type = 'Long Close'
+                    actual_side = 'Buy'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                else:  # Closing short
+                    trade_type = 'Short Close'
+                    actual_side = 'Sell'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+                
+                return {
+                    'symbol': f"{symbol.replace('USDT', '')}/USDT",  # Spot format
+                    'type': trade_type,
+                    'side': actual_side,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'pnl': pnl_percent,
+                    'pnl_status': format_pnl(pnl_percent),
+                    'closed_time': lagos_time,
+                    'utc_close_time': utc_time
+                }
+        return None
+    except Exception as e:
+        print(f"Error fetching trade history: {e}")
+        return None
+
+def analyze_trend_since_close(symbol, since_timestamp):
+    """Analyze trend changes since trade close (matches your reference script)"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None or len(df) < 2:
+            return None, "Error: Not enough market data"
+        
+        # Find the candle where trade was closed
+        close_candle_idx = df.index.get_indexer([since_timestamp], method='nearest')[0]
+        if close_candle_idx < 1:
+            close_candle_idx = 1
+        
+        # Get trend at close time
+        trend_at_close = detect_trend(df, close_candle_idx)
+        
+        # Check for counter-trend closing
+        last_trade = get_last_closed_trade()
+        if last_trade:
+            if (last_trade['side'] == "Sell" and trend_at_close == "Uptrend") or \
+               (last_trade['side'] == "Buy" and trend_at_close == "Downtrend"):
+                return None, "⚠️ COUNTER-TREND CLOSING DETECTED"
+        
+        # Analyze trend changes
+        current_trend = trend_at_close
+        first_flip = None
+        
+        for i in range(close_candle_idx + 1, len(df)):
+            new_trend = detect_trend(df, i)
+            
+            if new_trend != current_trend and new_trend in ["Uptrend", "Downtrend"]:
+                first_flip = {
+                    'time': df.index[i],
+                    'new_trend': new_trend,
+                    'price': df['close'].iloc[i],
+                    'candle_time': df.index[i].strftime('%Y-%m-%d %H:%M:%S')
+                }
+                break
+        
+        if first_flip:
+            duration = first_flip['time'] - since_timestamp
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            return first_flip, f"FIRST TREND FLIP: {first_flip['new_trend']} at {first_flip['candle_time']} ({hours}h {minutes}m after close)"
+        
+        return None, "✅ No trend flips detected since closing"
+    
+    except Exception as e:
+        print(f"Error analyzing trend: {e}")
+        return None, f"Error analyzing trend: {e}"
+
+def check_crossunder(symbol):
+    """Check for crossunder condition on specified symbol"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        src = df['close'].values
+        out, upper, lower = calculate_nwe(src, h, mult, repaint)
+        
+        close_series = pd.Series(src)
+        lower_series = pd.Series(lower)
+        crossunder = detect_crossunder(close_series, lower_series)
+        
+        return crossunder.iloc[-2]
+    except Exception as e:
+        print(f"Error checking crossunder: {e}")
+        return False
+
+def cancel_all_pending_orders(symbol):
+    """Cancel all pending orders for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        response = session.cancel_all_orders(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if response["retCode"] == 0:
+            print("All pending orders canceled")
+            return True
+        else:
+            print(f"Failed to cancel orders: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error canceling orders: {e}")
+        return False
+
+def place_long_market_order(symbol, usdt_amount=70):
+    """Place long market order for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        
+        ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+        market_price = float(ticker["result"]["list"][0]["lastPrice"])
+        
+        instrument_info = session.get_instruments_info(category="linear", symbol=pybit_symbol)
+        lot_size = instrument_info["result"]["list"][0]["lotSizeFilter"]
+        qty_step = float(lot_size["qtyStep"])
+        
+        quantity = round((usdt_amount / market_price) / qty_step) * qty_step
+        
+        # Calculate stop loss and take profit prices
+        stop_loss_price = market_price * (1 - STOP_LOSS_PERCENT/100)
+        take_profit_price = market_price * (1 + TAKE_PROFIT_PERCENT/100)
+        
+        response = session.place_order(
+            category="linear",
+            symbol=pybit_symbol,
+            side="Buy",
+            orderType="Market",
+            qty=str(quantity),
+            stopLoss=str(stop_loss_price),
+            takeProfit=str(take_profit_price)
+        )
+        
+        if response["retCode"] == 0:
+            msg = f"""Long market order placed for {quantity} {symbol.split('/')[0]} at {market_price}
+Stop Loss: {stop_loss_price:.4f} ({STOP_LOSS_PERCENT}%)
+Take Profit: {take_profit_price:.4f} ({TAKE_PROFIT_PERCENT}%)"""
+            print(msg)
+            send_email("Long Position Opened", msg)
+            return True
+        else:
+            print(f"Failed to place order: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error placing long order: {e}")
+        return False
+
+def close_short_position(symbol):
+    """Close short position for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        position = get_open_trade(symbol)
+        
+        if position and position['side'] == 'Sell':
+            ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+            market_price = float(ticker["result"]["list"][0]["lastPrice"])
+            
+            response = session.place_order(
+                category="linear",
+                symbol=pybit_symbol,
+                side="Buy",
+                orderType="Market",
+                qty=str(position['size'])
+            )
+            
+            if response["retCode"] == 0:
+                msg = f"Short position closed at {market_price}. PnL: {position['pnl_status']}"
+                print(msg)
+                send_email("Short Position Closed", msg)
+                return True
+            else:
+                print(f"Failed to close short position: {response['retMsg']}")
+                return False
+        return False
+    except Exception as e:
+        print(f"Error closing short position: {e}")
+        return False
+
+def main():
+    print(f"\n🚀 Starting Crossunder Strategy at {datetime.now(LAGOS_TZ).strftime('%Y-%m-%d %H:%M:%S')} Lagos Time\n")
+    
+    # 1. Check for any open trades
+    open_symbol = get_most_recent_open_trade_symbol()
+    if open_symbol:
+        print(f"🔍 Open Trade Detected:")
+        open_trade = get_open_trade(open_symbol)
+        
+        if open_trade:
+            print(f"Symbol: {open_symbol}")
+            print(f"Direction: {'SHORT' if open_trade['side'] == 'Sell' else 'LONG'}")
+            print(f"Entry Price: {open_trade['entry_price']}")
+            print(f"Size: {open_trade['size']}")
+            print(f"Unrealized PnL: {open_trade['pnl_status']}")
+            print(f"Created Time: {open_trade['created_time'].strftime('%Y-%m-%d %H:%M:%S')} Lagos Time")
+            print("\nOpen LONG trade - doing nothing as per strategy")
+            
+            # Handle open SHORT trade
+            if open_trade['side'] == 'Sell':
+                if check_crossunder(open_symbol):
+                    print("\n⚠️ CROSSUNDER DETECTED - Closing SHORT Position")
+                    if close_short_position(open_symbol):
+                        print("✅ SHORT Position Closed Successfully")
+                    else:
+                        print("❌ Failed to Close SHORT Position")
+                else:
+                    print("\n✅ No Crossunder - Keeping SHORT Position Open")
+            
+            #print("\n🛑 Strategy Blocked: Existing Open Position Detected")
+            return
+        
+        else:
+            print("\nℹ️ No Valid Open Positions Found")
+    
+    # 2. Check last closed trade
+    last_trade = get_last_closed_trade()
+    if not last_trade:
+        print("\nℹ️ No Previous Trades Found - Standing By")
+        return
+    
+    print(f"\n🔍 Last Closed Trade:")
+    print(f"Symbol: {last_trade['symbol']}")
+    print(f"Type: {last_trade['type']}")
+    print(f"Direction: {'LONG' if last_trade['side'] == 'Buy' else 'SHORT'}")
+    print(f"Entry Price: {last_trade['entry_price']}")
+    print(f"Exit Price: {last_trade['exit_price']}")
+    print(f"Closed Time: {last_trade['closed_time'].strftime('%Y-%m-%d %H:%M:%S')} Lagos Time")
+    print(f"PnL: {last_trade['pnl_status']}")
+    
+    # Only act if last closed was LONG
+    if last_trade['side'] == 'Buy':
+        # Analyze trend since close
+        flip_info, trend_message = analyze_trend_since_close(last_trade['symbol'], last_trade['closed_time'])
+        print(f"\n📈 Trend Analysis:")
+        print(trend_message)
+        
+        if "COUNTER-TREND" in trend_message:
+            print("🛑 Not Entering New Trade Due to Counter-Trend Close")
+        elif "FLIP" in trend_message:
+            print("🛑 Not Entering New Trade Due to Trend Flip")
+        else:
+            # Check current market data
+            df = fetch_market_data(last_trade['symbol'], timeframe, limit)
+            if df is not None:
+                current_trend = detect_trend(df, len(df)-1)
+                print(f"\n📊 Current Market Trend: {current_trend}")
+                
+                if check_crossunder(last_trade['symbol']):
+                    print("\n⚠️ CROSSUNDER DETECTED - Preparing to Enter LONG")
+                    if current_trend in ("Uptrend", "Sideways"):
+                        if cancel_all_pending_orders(last_trade['symbol']):
+                            print("✅ Orders Canceled - Entering LONG")
+                            place_long_market_order(last_trade['symbol'])
+                        else:
+                            print("❌ Failed to Cancel Pending Orders")
+                    else:
+                        print("🛑 Crossunder Ignored - Market in Downtrend")
+                else:
+                    print("\n✅ No Crossunder Detected - Standing By")
+    
+    print("\n✅ Strategy Execution Completed")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
+print("""
+  _________________________________
+ /                                 \\
+|   C R O S S O V E R  SECRETS   |
+ \\_________________________________/
+        \\                   /
+         \\                 /
+          `\\_____________/'
+""")
+
+
+
+import ccxt
+import pandas as pd
+import numpy as np
+from pybit.unified_trading import HTTP
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+import pytz
+
+# Initialize exchanges and trading session
+exchange = ccxt.gate({
+    'options': {
+        'defaultType': 'spot',  # Explicitly set to spot markets
+    }
+})
+session = HTTP(
+    api_key="4eQbf5STelVE40HOtB",
+    api_secret="bzo7oS1u8jxHIpkpFzy9mDLMvRrARJcXlKxt",
+    demo=True
+)
+
+# Timezone setup
+LAGOS_TZ = pytz.timezone('Africa/Lagos')
+UTC_TZ = pytz.UTC
+
+# Settings
+timeframe = '15m'
+limit = 500
+h = 8.0
+mult = 3.0
+repaint = True
+len_ema = 200
+STOP_LOSS_PERCENT = 2.5  # 2% stop loss
+TAKE_PROFIT_PERCENT = 10.0  # 10% take profit
+
+# Email settings
+SENDER_EMAIL = "dahmadu071@gmail.com"
+RECIPIENT_EMAILS = ["teejeedeeone@gmail.com"]
+EMAIL_PASSWORD = "oase wivf hvqn lyhr"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+def format_pnl(pnl):
+    """Format PnL with proper sign and profit/loss indication"""
+    if pnl > 0:
+        return f"+{pnl:.2f}% (Profit)"
+    elif pnl < 0:
+        return f"{pnl:.2f}% (Loss)"
+    return f"{pnl:.2f}% (Break-even)"
+
+def send_email(subject, body):
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = ", ".join(RECIPIENT_EMAILS)
+        
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("Email notification sent")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
+def get_pybit_symbol(ccxt_symbol):
+    """Convert CCXT spot symbol to Bybit symbol format"""
+    return ccxt_symbol.replace('/', '')  # Turns 'BTC/USDT' into 'BTCUSDT'
+
+def gauss(x, h):
+    """Gaussian window function"""
+    return np.exp(-(x ** 2) / (h ** 2 * 2))
+
+def calculate_nwe(src, h, mult, repaint):
+    """Calculate Nadaraya-Watson Envelope"""
+    n = len(src)
+    out = np.zeros(n)
+    mae = np.zeros(n)
+    upper = np.zeros(n)
+    lower = np.zeros(n)
+    
+    if not repaint:
+        coefs = np.array([gauss(i, h) for i in range(n)])
+        den = np.sum(coefs)
+        
+        for i in range(n):
+            out[i] = np.sum(src * coefs) / den
+        
+        mae = pd.Series(np.abs(src - out)).rolling(499).mean().values * mult
+        upper = out + mae
+        lower = out - mae
+    else:
+        nwe = []
+        sae = 0.0
+        
+        for i in range(n):
+            sum_val = 0.0
+            sumw = 0.0
+            for j in range(n):
+                w = gauss(i - j, h)
+                sum_val += src[j] * w
+                sumw += w
+            y2 = sum_val / sumw
+            nwe.append(y2)
+            sae += np.abs(src[i] - y2)
+        
+        sae = (sae / n) * mult
+        
+        for i in range(n):
+            upper[i] = nwe[i] + sae
+            lower[i] = nwe[i] - sae
+            out[i] = nwe[i]
+    
+    return out, upper, lower
+
+def detect_crossover(close, upper):
+    """Detect if price has crossed above the upper envelope"""
+    return (close.shift(1) < upper.shift(1)) & (close > upper)
+
+def fetch_market_data(symbol, timeframe, limit=500):
+    """Fetch OHLCV data with proper timezone handling"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(LAGOS_TZ)
+        df.set_index('timestamp', inplace=True)
+        df['EMA'] = df['close'].ewm(span=len_ema, adjust=False).mean()
+        return df
+    except Exception as e:
+        print(f"Error fetching market data: {e}")
+        return None
+
+def detect_trend(df, candle_index):
+    """Determine trend for a specific candle"""
+    if candle_index < 1 or candle_index >= len(df):
+        return "Sideways"
+    
+    ema_current = df['EMA'].iloc[candle_index]
+    ema_prev = df['EMA'].iloc[candle_index-1]
+    price = df['close'].iloc[candle_index]
+    
+    if ema_current > ema_prev and price > ema_current:
+        return "Uptrend"
+    elif ema_current < ema_prev and price < ema_current:
+        return "Downtrend"
+    return "Sideways"
+
+def get_most_recent_open_trade_symbol():
+    """Get symbol of most recent open trade"""
+    try:
+        executions = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if executions["retCode"] != 0:
+            print(f"Error fetching executions: {executions['retMsg']}")
+            return None
+            
+        if not executions["result"]["list"]:
+            return None
+            
+        for trade in sorted(executions["result"]["list"], 
+                          key=lambda x: int(x["execTime"]), 
+                          reverse=True):
+            if trade["execType"] == "Trade" and float(trade["execQty"]) > 0:
+                positions = session.get_positions(
+                    category="linear",
+                    symbol=trade["symbol"]
+                )
+                
+                if positions["retCode"] == 0 and positions["result"]["list"]:
+                    for position in positions["result"]["list"]:
+                        if position["symbol"] == trade["symbol"] and float(position["size"]) > 0:
+                            return f"{trade['symbol'].replace('USDT', '')}/USDT"  # Spot format
+        
+        return None
+    except Exception as e:
+        print(f"Error checking trades: {e}")
+        return None
+
+def get_open_trade(symbol):
+    """Get details of open trade for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        positions = session.get_positions(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if positions["retCode"] == 0 and positions["result"]["list"]:
+            for position in positions["result"]["list"]:
+                if position["symbol"] == pybit_symbol and float(position["size"]) > 0:
+                    unrealized_pnl = float(position['unrealisedPnl'])
+                    return {
+                        'side': position['side'],
+                        'size': float(position['size']),
+                        'entry_price': float(position['avgPrice']),
+                        'unrealized_pnl': unrealized_pnl,
+                        'pnl_status': format_pnl(unrealized_pnl),
+                        'created_time': datetime.fromtimestamp(int(position['createdTime'])/1000, UTC_TZ).astimezone(LAGOS_TZ)
+                    }
+        return None
+    except Exception as e:
+        print(f"Error checking open positions: {e}")
+        return None
+
+def get_last_closed_trade():
+    """Get details of last closed trade"""
+    try:
+        trades = session.get_executions(
+            category="linear",
+            limit=50,
+            settleCoin="USDT"
+        )
+        
+        if trades["retCode"] != 0:
+            print(f"Error fetching trades: {trades['retMsg']}")
+            return None
+            
+        trades = trades["result"]["list"]
+        if not trades:
+            return None
+
+        for trade in sorted(trades, key=lambda x: int(x["execTime"]), reverse=True):
+            symbol = trade["symbol"]
+            positions = session.get_positions(
+                category="linear",
+                symbol=symbol
+            )
+            
+            if positions["retCode"] != 0:
+                continue
+                
+            position_open = any(float(p["size"]) > 0 for p in positions["result"]["list"])
+            
+            if not position_open and trade["closedSize"]:
+                utc_time = datetime.fromtimestamp(int(trade["execTime"])/1000, UTC_TZ)
+                lagos_time = utc_time.astimezone(LAGOS_TZ)
+                
+                if trade['side'] == 'Sell':  # Closing long
+                    trade_type = 'Long Close'
+                    actual_side = 'Buy'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                else:  # Closing short
+                    trade_type = 'Short Close'
+                    actual_side = 'Sell'
+                    entry_price = float(trade["avgEntryPrice"]) if "avgEntryPrice" in trade else float(trade["execPrice"])
+                    exit_price = float(trade["execPrice"])
+                    pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+                
+                return {
+                    'symbol': f"{symbol.replace('USDT', '')}/USDT",  # Spot format
+                    'type': trade_type,
+                    'side': actual_side,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'pnl': pnl_percent,
+                    'pnl_status': format_pnl(pnl_percent),
+                    'closed_time': lagos_time,
+                    'utc_close_time': utc_time
+                }
+        return None
+    except Exception as e:
+        print(f"Error fetching trade history: {e}")
+        return None
+
+def analyze_trend_since_close(symbol, since_timestamp):
+    """Analyze trend changes since trade close"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None or len(df) < 2:
+            return None, "Error: Not enough market data"
+        
+        close_candle_idx = df.index.get_indexer([since_timestamp], method='nearest')[0]
+        if close_candle_idx < 1:
+            close_candle_idx = 1
+        
+        trend_at_close = detect_trend(df, close_candle_idx)
+        
+        last_trade = get_last_closed_trade()
+        if last_trade:
+            if (last_trade['side'] == "Sell" and trend_at_close == "Uptrend") or \
+               (last_trade['side'] == "Buy" and trend_at_close == "Downtrend"):
+                return None, "⚠️ COUNTER-TREND CLOSING DETECTED"
+        
+        current_trend = trend_at_close
+        first_flip = None
+        
+        for i in range(close_candle_idx + 1, len(df)):
+            new_trend = detect_trend(df, i)
+            
+            if new_trend != current_trend and new_trend in ["Uptrend", "Downtrend"]:
+                first_flip = {
+                    'time': df.index[i],
+                    'new_trend': new_trend,
+                    'price': df['close'].iloc[i],
+                    'candle_time': df.index[i].strftime('%Y-%m-%d %H:%M:%S')
+                }
+                break
+        
+        if first_flip:
+            duration = first_flip['time'] - since_timestamp
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            return first_flip, f"FIRST TREND FLIP: {first_flip['new_trend']} at {first_flip['candle_time']} ({hours}h {minutes}m after close)"
+        
+        return None, "✅ No trend flips detected since closing"
+    
+    except Exception as e:
+        print(f"Error analyzing trend: {e}")
+        return None, f"Error analyzing trend: {e}"
+
+def check_crossover(symbol):
+    """Check for crossover condition on specified symbol"""
+    try:
+        df = fetch_market_data(symbol, timeframe, limit)
+        if df is None:
+            return False
+            
+        src = df['close'].values
+        out, upper, lower = calculate_nwe(src, h, mult, repaint)
+        
+        close_series = pd.Series(src)
+        upper_series = pd.Series(upper)
+        crossover = detect_crossover(close_series, upper_series)
+        
+        return crossover.iloc[-2]  # Check most recent candle
+    except Exception as e:
+        print(f"Error checking crossover: {e}")
+        return False
+
+def cancel_all_pending_orders(symbol):
+    """Cancel all pending orders for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        response = session.cancel_all_orders(
+            category="linear",
+            symbol=pybit_symbol
+        )
+        if response["retCode"] == 0:
+            print("All pending orders canceled")
+            return True
+        else:
+            print(f"Failed to cancel orders: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error canceling orders: {e}")
+        return False
+
+def close_long_position(symbol):
+    """Close long position for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        position = get_open_trade(symbol)
+        
+        if position and position['side'] == 'Buy':
+            ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+            market_price = float(ticker["result"]["list"][0]["lastPrice"])
+            
+            response = session.place_order(
+                category="linear",
+                symbol=pybit_symbol,
+                side="Sell",
+                orderType="Market",
+                qty=str(position['size'])
+            )
+            
+            if response["retCode"] == 0:
+                msg = f"Long position closed at {market_price}. PnL: {position['pnl_status']}"
+                print(msg)
+                send_email("Long Position Closed", msg)
+                return True
+            else:
+                print(f"Failed to close long position: {response['retMsg']}")
+                return False
+        return False
+    except Exception as e:
+        print(f"Error closing long position: {e}")
+        return False
+
+def place_short_market_order(symbol, usdt_amount=70):
+    """Place short market order for specified symbol"""
+    try:
+        pybit_symbol = get_pybit_symbol(symbol)
+        
+        ticker = session.get_tickers(category="linear", symbol=pybit_symbol)
+        market_price = float(ticker["result"]["list"][0]["lastPrice"])
+        
+        instrument_info = session.get_instruments_info(category="linear", symbol=pybit_symbol)
+        lot_size = instrument_info["result"]["list"][0]["lotSizeFilter"]
+        qty_step = float(lot_size["qtyStep"])
+        
+        quantity = round((usdt_amount / market_price) / qty_step) * qty_step
+        
+        # Calculate stop loss and take profit prices
+        stop_loss_price = market_price * (1 + STOP_LOSS_PERCENT/100)
+        take_profit_price = market_price * (1 - TAKE_PROFIT_PERCENT/100)
+        
+        response = session.place_order(
+            category="linear",
+            symbol=pybit_symbol,
+            side="Sell",
+            orderType="Market",
+            qty=str(quantity),
+            stopLoss=str(stop_loss_price),
+            takeProfit=str(take_profit_price)
+        )
+        
+        if response["retCode"] == 0:
+            msg = f"""Short market order placed for {quantity} {symbol.split('/')[0]} at {market_price}
+Stop Loss: {stop_loss_price:.4f} ({STOP_LOSS_PERCENT}%)
+Take Profit: {take_profit_price:.4f} ({TAKE_PROFIT_PERCENT}%)"""
+            print(msg)
+            send_email("Short Position Opened", msg)
+            return True
+        else:
+            print(f"Failed to place order: {response['retMsg']}")
+            return False
+    except Exception as e:
+        print(f"Error placing short order: {e}")
+        return False
+
+def main():
+    print(f"\n🚀 Starting Crossover Strategy at {datetime.now(LAGOS_TZ).strftime('%Y-%m-%d %H:%M:%S')} Lagos Time\n")
+    
+    # 1. Check for any open trades
+    open_symbol = get_most_recent_open_trade_symbol()
+    if open_symbol:
+        print(f"🔍 Open Trade Detected on {open_symbol}:")
+        open_trade = get_open_trade(open_symbol)
+        
+        if open_trade:
+            print(f"Direction: {'SHORT' if open_trade['side'] == 'Sell' else 'LONG'}")
+            print(f"Entry Price: {open_trade['entry_price']}")
+            print(f"Size: {open_trade['size']}")
+            print(f"Unrealized PnL: {open_trade['pnl_status']}")
+            print(f"Created Time: {open_trade['created_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Handle open LONG trade (close on crossover)
+            if open_trade['side'] == 'Buy':
+                if check_crossover(open_symbol):
+                    print("\n⚠️ CROSSOVER DETECTED - Closing LONG Position")
+                    if close_long_position(open_symbol):
+                        print("✅ LONG Position Closed Successfully")
+                    else:
+                        print("❌ Failed to Close LONG Position")
+                else:
+                    print("\n✅ No Crossover - Keeping LONG Position Open")
+            
+            return
+        
+    # 2. Check last closed trade
+    last_trade = get_last_closed_trade()
+    if not last_trade:
+        print("\nℹ️ No Previous Trades Found - Standing By")
+        return
+    
+    print(f"\n🔍 Last Closed Trade:")
+    print(f"Symbol: {last_trade['symbol']}")
+    print(f"Type: {last_trade['type']}")
+    print(f"Direction: {'LONG' if last_trade['side'] == 'Buy' else 'SHORT'}")
+    print(f"Entry Price: {last_trade['entry_price']}")
+    print(f"Exit Price: {last_trade['exit_price']}")
+    print(f"Closed Time: {last_trade['closed_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"PnL: {last_trade['pnl_status']}")
+    
+    # Only act if last closed was SHORT trade
+    if last_trade['side'] == 'Sell':
+        # Analyze trend since close
+        flip_info, trend_message = analyze_trend_since_close(last_trade['symbol'], last_trade['closed_time'])
+        print(f"\n📈 Trend Analysis:")
+        print(trend_message)
+        
+        if "COUNTER-TREND" in trend_message:
+            print("🛑 Not Entering New Trade Due to Counter-Trend Close")
+        elif "FLIP" in trend_message:
+            print("🛑 Not Entering New Trade Due to Trend Flip")
+        else:
+            # Check current market data
+            df = fetch_market_data(last_trade['symbol'], timeframe, limit)
+            if df is not None:
+                current_trend = detect_trend(df, len(df)-1)
+                print(f"\n📊 Current Market Trend: {current_trend}")
+                
+                if check_crossover(last_trade['symbol']):
+                    print("\n⚠️ CROSSOVER DETECTED - Preparing to Enter SHORT")
+                    if current_trend in ("Downtrend", "Sideways"):
+                        if cancel_all_pending_orders(last_trade['symbol']):
+                            print("✅ Orders Canceled - Entering SHORT")
+                            place_short_market_order(last_trade['symbol'])
+                        else:
+                            print("❌ Failed to Cancel Pending Orders")
+                    else:
+                        print("🛑 Crossover Ignored - Market in Uptrend")
+                else:
+                    print("\n✅ No Crossover Detected - Standing By")
+    
+    print("\n✅ Strategy Execution Completed")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+###################################################################
+##################################################################
+#################################################################
+###############################################################
+#############################################################
+######################################################
+###################################
+###################
