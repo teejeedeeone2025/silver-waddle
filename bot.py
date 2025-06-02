@@ -4,13 +4,12 @@ print("""
 
 
 from pybit.unified_trading import HTTP
-import os
 import ccxt
 import pandas as pd
 
 # Initialize Bybit session
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
+API_KEY = "zeaiwMV3FrI5f1YM1w"
+API_SECRET = "73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6"
 session = HTTP(api_key=API_KEY, api_secret=API_SECRET, demo=False)
 
 # Initialize CCXT for trend analysis
@@ -134,7 +133,6 @@ print("""
 
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -147,8 +145,8 @@ import pytz
 # Initialize exchanges and trading session
 exchange = ccxt.bitget()
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -670,7 +668,6 @@ print("""
 
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -683,8 +680,8 @@ import pytz
 # Initialize exchanges and trading session
 exchange = ccxt.bitget()
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -1218,7 +1215,6 @@ print("""
 
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -1235,8 +1231,8 @@ exchange = ccxt.bitget({
     }
 })
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -1754,7 +1750,6 @@ print("""
 
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -1771,8 +1766,8 @@ exchange = ccxt.bitget({
     }
 })
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -2289,7 +2284,6 @@ print("""
 
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -2306,8 +2300,8 @@ exchange = ccxt.bingx({
     }
 })
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -2825,7 +2819,6 @@ print("""
 
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -2842,8 +2835,8 @@ exchange = ccxt.bingx({
     }
 })
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret= os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -3355,7 +3348,6 @@ print("""
 
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -3372,8 +3364,8 @@ exchange = ccxt.mexc({
     }
 })
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret= os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -3891,7 +3883,6 @@ print("""
 
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -3908,8 +3899,8 @@ exchange = ccxt.mexc({
     }
 })
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -4430,7 +4421,6 @@ print("""
 
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -4447,8 +4437,8 @@ exchange = ccxt.gate({
     }
 })
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -4966,7 +4956,6 @@ print("""
 
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -4983,8 +4972,8 @@ exchange = ccxt.gate({
     }
 })
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -5509,7 +5498,6 @@ print("""
 """)  
 
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -5546,8 +5534,8 @@ UTC_TZ = pytz.UTC
 # Initialize exchanges and session
 exchange = ccxt.bitget()
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -5793,7 +5781,6 @@ print("""
   \033[90m▁▂▃▄▅▆▇▓▒░ 2xATR ░▒▓▇▆▅▄▃▂▁\033[0m  
 """)  
 
-import os
 import ccxt
 import pandas as pd
 import numpy as np
@@ -5828,8 +5815,8 @@ UTC_TZ = pytz.UTC
 # Initialize exchanges
 exchange = ccxt.bitget()
 session = HTTP(
-    api_key= os.getenv("API_KEY"),
-    api_secret=os.getenv("API_SECRET"),
+    api_key="zeaiwMV3FrI5f1YM1w",
+    api_secret="73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6",
     demo=False
 )
 
@@ -6155,7 +6142,6 @@ print("""
 ╚═══*.·:·.☽✧    ✦    ✧☾.·:·.*═══╝
 """)
 
-import os
 import ccxt
 import pandas as pd
 import pytz
@@ -6187,9 +6173,9 @@ EMA_TREND = 200
 TIMEFRAME = '15m'
 
 # API Configuration
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
-DEMO_MODE = True
+API_KEY = "zeaiwMV3FrI5f1YM1w"
+API_SECRET = "73cYV9bXXgjPZPc9gf9tv3sWEawwTH2gQXU6"
+DEMO_MODE = False
 
 # ===== Initialize Connections =====
 bybit = HTTP(
