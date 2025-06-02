@@ -1,3 +1,52 @@
+import requests
+import json
+
+def get_ip_info():
+    try:
+        # Get public IP address
+        ip_response = requests.get('https://api.ipify.org?format=json')
+        ip_data = ip_response.json()
+        public_ip = ip_data['ip']
+        
+        # Get country information for the IP
+        geo_response = requests.get(f'https://ipapi.co/{public_ip}/json/')
+        geo_data = geo_response.json()
+        
+        # Prepare the output
+        result = {
+            'ip_address': public_ip,
+            'country': geo_data.get('country_name'),
+            'country_code': geo_data.get('country_code'),
+            'region': geo_data.get('region'),
+            'city': geo_data.get('city'),
+            'is_github_actions': 'GITHUB_ACTIONS' in os.environ
+        }
+        
+        return result
+    
+    except Exception as e:
+        return {'error': str(e)}
+
+if __name__ == "__main__":
+    import os
+    info = get_ip_info()
+    
+    if 'error' in info:
+        print(f"Error: {info['error']}")
+    else:
+        print("\nIP and Location Information:")
+        print(f"IP Address: {info['ip_address']}")
+        print(f"Country: {info['country']} ({info['country_code']})")
+        print(f"Region: {info['region']}")
+        print(f"City: {info['city']}")
+        print(f"Running in GitHub Actions: {'Yes' if info['is_github_actions'] else 'No'}")
+        
+        if info['is_github_actions']:
+            print("\nGitHub Actions Environment:")
+            print(f"GitHub Runner OS: {os.getenv('RUNNER_OS')}")
+            print(f"GitHub Repository: {os.getenv('GITHUB_REPOSITORY')}")
+
+
 print("""  
   \033[93m▄︻デ══━一    🏹  𝕊𝕋ℝ𝔸𝕋𝔼𝔾𝕐 𝕊ℂℝ𝕀ℙ𝕋    ══━一デ︻▄\033[0m  
 """)  
