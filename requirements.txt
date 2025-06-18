@@ -1,3 +1,2 @@
-ccxt
-pybit
-pandas
+requests 
+beautifulsoup4
