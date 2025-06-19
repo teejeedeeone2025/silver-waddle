@@ -1,45 +1,44 @@
 from urllib.request import Request, urlopen
 from bs4 import BeautifulSoup
 from datetime import datetime
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import urllib.error
+import vonage
 
-# Email configuration
-SENDER_EMAIL = "dahmadu071@gmail.com"
-RECIPIENT_EMAILS = ["teejeedeeone@gmail.com"]
-EMAIL_PASSWORD = "oase wivf hvqn lyhr"
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
+# Vonage (Nexmo) SMS Configuration
+VONAGE_API_KEY = "143a7dc2"
+VONAGE_API_SECRET = "IB7ARMn3j5TKnBVg"
+SMS_FROM = "Teejeedee"  # Your sender name
+SMS_TO = "2349060558418"  # Your recipient number (international format)
 
-def send_email_notification(new_numbers):
+def send_sms_notification(new_numbers):
     try:
-        msg = MIMEMultipart()
-        msg['From'] = SENDER_EMAIL
-        msg['To'] = ", ".join(RECIPIENT_EMAILS)
-        msg['Subject'] = f"New Temporary Numbers Available ({len(new_numbers)} found)"
+        client = vonage.Client(key=VONAGE_API_KEY, secret=VONAGE_API_SECRET)
+        sms = vonage.Sms(client)
         
-        body = "New temporary phone numbers were just posted:\n\n"
-        for number in new_numbers:
-            body += f"📱 Phone: {number['phone_number']}\n"
-            body += f"⏰ Posted: {number['time_posted']}\n"
-            body += f"🔗 Link: https://temp-number.com/temporary-numbers/United-States/{number['phone_number']}/1\n"
-            body += "-"*50 + "\n"
+        # Format the message
+        message = f"New temp numbers found ({len(new_numbers)}):\n"
+        for number in new_numbers[:10]:  # Limit to first 3 numbers due to SMS length limits
+            message += f"{number['phone_number']} ({number['time_posted']})\n"
         
-        body += "\nThis notification was sent because these numbers were posted within the last 5 minutes."
-        msg.attach(MIMEText(body, 'plain'))
+        if len(new_numbers) > 10:
+            message += f"+{len(new_numbers)-3} more..."
         
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SENDER_EMAIL, EMAIL_PASSWORD)
-            server.sendmail(SENDER_EMAIL, RECIPIENT_EMAILS, msg.as_string())
+        # Send SMS
+        response = sms.send_message({
+            "from": SMS_FROM,
+            "to": SMS_TO,
+            "text": message
+        })
         
-        print(f"Email notification sent for {len(new_numbers)} new number(s)")
-        return True
-    
+        if response["messages"][0]["status"] == "0":
+            print("SMS sent successfully")
+            return True
+        else:
+            print(f"SMS failed: {response['messages'][0]['error-text']}")
+            return False
+            
     except Exception as e:
-        print(f"Error sending email: {e}")
+        print(f"Error sending SMS: {e}")
         return False
 
 def get_phone_numbers(url):
@@ -91,16 +90,16 @@ def check_for_new_numbers():
         time_text = number['time_posted'].lower()
         if 'minute' in time_text:
             minutes_ago = int(time_text.split()[0])
-            if minutes_ago <= 5:
+            if minutes_ago <= 2:
                 new_numbers.append(number)
-        elif 'second' in time_text:  # In case any are posted seconds ago
+        elif 'second' in time_text:
             new_numbers.append(number)
     
     if new_numbers:
-        print(f"Found {len(new_numbers)} new number(s) posted within last 5 minutes")
-        return send_email_notification(new_numbers)
+        print(f"Found {len(new_numbers)} new number(s) posted within last 2 minutes")
+        return send_sms_notification(new_numbers)
     else:
-        print("No new numbers found in the last 5 minutes")
+        print("No new numbers found in the last 2 minutes")
         return False
 
 if __name__ == "__main__":
