@@ -1,7 +1,10 @@
-name: Run Bot (Self-triggering)
+name: Run Bot (15-minute Candle Aligned)
 
 on:
   workflow_dispatch:  # Allows manual start
+  schedule:
+    # This is a fallback in case the self-triggering fails
+    - cron: '*/15 * * * *'
 
 jobs:
   run-bot:
@@ -19,18 +22,31 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Calculate initial delay
+        id: delay
+        run: |
+          # Same logic as your bash script
+          now=$(date +%s)
+          interval=900
+          next=$(( (now/interval + 1)*interval ))
+          delay=$(( next - now ))
+          echo "Initial delay: $delay seconds"
+          echo "sleep_time=$delay" >> $GITHUB_OUTPUT
+
+      - name: Initial delay (align with candle)
+        run: sleep ${{ steps.delay.outputs.sleep_time }}
+
       - name: Run bot
         run: python bot.py
 
-      # Add delay before next trigger (5 minutes = 300 seconds)
-      - name: Delay before next run
-        run: sleep 47
+      # Fixed 15-minute (900s) delay between runs
+      - name: Delay between runs
+        run: sleep 900
 
       # Self-trigger next run
       - name: Trigger Next Run
         run: |
           curl -X POST -H "Accept: application/vnd.github+json" \
           -H "Authorization: Bearer ${{ secrets.GH_PAT }}" \
-          "https://api.github.com/repos/${{ github.repository }}/actions/workflows/main.yml/dispatches" \
+          "https://api.github.com/repos/${{ github.repository }}/actions/workflows/${{ github.workflow }}.yml/dispatches" \
           -d '{"ref":"main"}'
-          
