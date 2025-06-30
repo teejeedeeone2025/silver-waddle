@@ -1,3 +1,3 @@
-requests 
-beautifulsoup4
-vonage==3.0.0
+ccxt
+pybit
+pandas
