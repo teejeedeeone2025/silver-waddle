@@ -1,5 +1,5 @@
 #ccxt
 #pybit
 #pandas
-selenium>=4.0.0
-chromedriver_autoinstaller>=1.0.0
+selenium
+chromedriver_autoinstaller
