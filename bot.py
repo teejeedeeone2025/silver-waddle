@@ -1,12 +1,12 @@
 # Step 1: Install required packages and configure Chrome
-!apt-get update
-!apt install -y wget curl unzip
-!pip install selenium chromedriver_autoinstaller
+apt-get update
+apt install -y wget curl unzip
+pip install selenium chromedriver_autoinstaller
 
 # Step 2: Install Chrome and ChromeDriver
-!wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-!dpkg -i google-chrome-stable_current_amd64.deb
-!apt-get install -y -f
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+dpkg -i google-chrome-stable_current_amd64.deb
+apt-get install -y -f
 import chromedriver_autoinstaller
 chromedriver_autoinstaller.install()
 #import
