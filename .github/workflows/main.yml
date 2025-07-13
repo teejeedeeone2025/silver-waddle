@@ -16,17 +16,30 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget curl unzip
+          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y -f
+
+      - name: Install Python dependencies
+        run: |
+          pip install selenium chromedriver_autoinstaller
 
       - name: Run bot
         run: python bot.py
 
-      # Add delay before next trigger (5 minutes = 300 seconds)
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v3
+        with:
+          name: mtn-screenshot
+          path: final_result.png
+
       - name: Delay before next run
         run: sleep 500
 
-      # Self-trigger next run
       - name: Trigger Next Run
         run: |
           curl -X POST -H "Accept: application/vnd.github+json" \
