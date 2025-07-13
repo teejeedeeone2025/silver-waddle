@@ -1,5 +1,5 @@
-#ccxt
-#pybit
-#pandas
+ccxt
+pybit
+pandas
 selenium
 chromedriver_autoinstaller
